@@ -77,6 +77,11 @@ func (s *Service) SyncFromConfig(ctx context.Context) error {
 	records := make([]store.PeerRecord, len(peers))
 	for i, p := range peers {
 		cfg, _ := clientfile.Load(s.clientsDirs, s.params.ServerWGNIC, p.Name)
+		if cfg != "" {
+			if updated, _, err := wgconf.EnsureJunkParams(cfg); err == nil {
+				cfg = updated
+			}
+		}
 		records[i] = store.PeerRecord{
 			Name:         p.Name,
 			PublicKey:    p.PublicKey,
@@ -168,6 +173,11 @@ func (s *Service) Create(ctx context.Context, name, actor string) (*CreateResult
 		return nil, err
 	}
 
+	junk, err := wgconf.GenerateJunkParams()
+	if err != nil {
+		return nil, err
+	}
+
 	allowedIPs := fmt.Sprintf("%s/32,%s/128", clientIPv4, clientIPv6)
 	peer := wgconf.Peer{
 		Name:       name,
@@ -197,6 +207,7 @@ func (s *Service) Create(ctx context.Context, name, actor string) (*CreateResult
 		psk,
 		s.params.Endpoint(),
 		s.params.AllowedIPs,
+		junk,
 	)
 
 	now := time.Now().UTC()
@@ -234,13 +245,23 @@ func (s *Service) GetConfig(ctx context.Context, name string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+
+	var cfg string
 	if rec != nil && rec.ClientConfig != "" {
-		return rec.ClientConfig, nil
+		cfg = rec.ClientConfig
+	} else {
+		loaded, loadErr := clientfile.Load(s.clientsDirs, s.params.ServerWGNIC, name)
+		if loadErr == nil {
+			cfg = loaded
+		}
 	}
 
-	cfg, err := clientfile.Load(s.clientsDirs, s.params.ServerWGNIC, name)
-	if err == nil {
-		if rec != nil {
+	if cfg != "" {
+		updated, _, err := wgconf.EnsureJunkParams(cfg)
+		if err != nil {
+			return "", err
+		}
+		if updated != cfg && rec != nil {
 			_ = s.store.UpsertPeer(ctx, store.PeerRecord{
 				Name:         rec.Name,
 				PublicKey:    rec.PublicKey,
@@ -249,10 +270,21 @@ func (s *Service) GetConfig(ctx context.Context, name string) (string, error) {
 				Enabled:      rec.Enabled,
 				CreatedAt:    rec.CreatedAt,
 				CreatedBy:    rec.CreatedBy,
-				ClientConfig: cfg,
+				ClientConfig: updated,
+			})
+		} else if updated != cfg {
+			_ = s.store.UpsertPeer(ctx, store.PeerRecord{
+				Name:         name,
+				ClientConfig: updated,
+				Enabled:      true,
+				CreatedAt:    time.Now().UTC(),
+				CreatedBy:    "import",
 			})
 		}
-		return cfg, nil
+		for _, dir := range s.clientsDirs {
+			_ = clientfile.Save(dir, s.params.ServerWGNIC, name, updated)
+		}
+		return updated, nil
 	}
 
 	confPath := s.params.WGConfPath(s.wgDir)

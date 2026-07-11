@@ -154,16 +154,16 @@ func RemovePeer(path, name string) error {
 }
 
 // BuildClientConfig generates a client .conf file content.
-func BuildClientConfig(privKey, ipv4, ipv6, dns1, dns2, serverPubKey, psk, endpoint, allowedIPs string) string {
+func BuildClientConfig(privKey, ipv4, ipv6, dns1, dns2, serverPubKey, psk, endpoint, allowedIPs string, junk JunkParams) string {
 	return fmt.Sprintf(`[Interface]
 PrivateKey = %s
 Address = %s/32,%s/128
 DNS = %s,%s
-
+%s
 [Peer]
 PublicKey = %s
 PresharedKey = %s
 Endpoint = %s
 AllowedIPs = %s
-`, privKey, ipv4, ipv6, dns1, dns2, serverPubKey, psk, endpoint, allowedIPs)
+`, privKey, ipv4, ipv6, dns1, dns2, junk.lines(), serverPubKey, psk, endpoint, allowedIPs)
 }

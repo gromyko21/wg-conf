@@ -3,6 +3,7 @@ package wgconf
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -76,8 +77,43 @@ AllowedIPs = 10.0.0.2/32
 }
 
 func TestBuildClientConfig(t *testing.T) {
-	cfg := BuildClientConfig("priv", "10.0.0.2", "fd42::2", "1.1.1.1", "1.0.0.1", "spub", "psk", "1.2.3.4:51820", "0.0.0.0/0")
+	junk := JunkParams{Jc: 3, Jmin: 8, Jmax: 32}
+	cfg := BuildClientConfig("priv", "10.0.0.2", "fd42::2", "1.1.1.1", "1.0.0.1", "spub", "psk", "1.2.3.4:51820", "0.0.0.0/0", junk)
 	if cfg == "" {
 		t.Fatal("empty config")
+	}
+	if !strings.Contains(cfg, "Jc = 3") || !strings.Contains(cfg, "Jmin = 8") || !strings.Contains(cfg, "Jmax = 32") {
+		t.Fatalf("missing junk params: %s", cfg)
+	}
+}
+
+func TestEnsureJunkParams(t *testing.T) {
+	input := `[Interface]
+PrivateKey = test
+Address = 10.0.0.2/32
+DNS = 1.1.1.1
+
+[Peer]
+PublicKey = spub
+Endpoint = 1.2.3.4:51820
+AllowedIPs = 0.0.0.0/0
+`
+	updated, junk, err := EnsureJunkParams(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if junk.Jc == 0 || junk.Jmin < 8 || junk.Jmax <= junk.Jmin {
+		t.Fatalf("invalid junk: %+v", junk)
+	}
+	if !HasJunkParams(updated) {
+		t.Fatalf("junk not injected: %s", updated)
+	}
+
+	same, _, err := EnsureJunkParams(updated)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if same != updated {
+		t.Fatal("expected no changes when junk already present")
 	}
 }
