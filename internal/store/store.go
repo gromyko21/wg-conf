@@ -307,6 +307,14 @@ ORDER BY collected_at ASC LIMIT 1
 	return rx, tx, true, nil
 }
 
+func (s *Store) ResetMonthTraffic(ctx context.Context, yearMonth string) error {
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM monthly_traffic WHERE year_month = ?`, yearMonth); err != nil {
+		return err
+	}
+	_, err := s.db.ExecContext(ctx, `DELETE FROM traffic_baselines WHERE year_month = ?`, yearMonth)
+	return err
+}
+
 func (s *Store) MonthlyTrafficByPeer(ctx context.Context, yearMonth string) (map[string]MonthlyTraffic, error) {
 	rows, err := s.db.QueryContext(ctx, `
 SELECT m.peer_name, m.year_month, m.upload_bytes, m.download_bytes, COALESCE(p.monthly_limit_bytes, 0)

@@ -22,6 +22,7 @@ import (
 	"github.com/user/wg-conf/internal/monitor"
 	"github.com/user/wg-conf/internal/peer"
 	"github.com/user/wg-conf/internal/store"
+	"github.com/user/wg-conf/internal/traffic"
 	"github.com/user/wg-conf/internal/web"
 	"github.com/user/wg-conf/internal/wireguard"
 )
@@ -38,9 +39,30 @@ func main() {
 		dbPath     = flag.String("db", "/var/lib/wg-conf/wg-conf.db", "SQLite database path")
 		apiKey     = flag.String("api-key", os.Getenv("WG_CONF_API_KEY"), "API key for authentication")
 		clientsDir = flag.String("clients-dir", "/root", "directory with angristan client configs (wg0-client-*.conf)")
-		interval   = flag.Duration("monitor-interval", 30*time.Second, "stats collection interval")
+		interval          = flag.Duration("monitor-interval", 30*time.Second, "stats collection interval")
+		resetMonthTraffic = flag.Bool("reset-month-traffic", false, "reset monthly traffic stats for the current month and exit")
 	)
 	flag.Parse()
+
+	if *resetMonthTraffic {
+		if err := os.MkdirAll(filepath.Dir(*dbPath), 0o755); err != nil {
+			slog.Error("create db dir", "error", err)
+			os.Exit(1)
+		}
+		st, err := store.Open(*dbPath)
+		if err != nil {
+			slog.Error("open store", "error", err)
+			os.Exit(1)
+		}
+		defer st.Close()
+		month := traffic.MonthKey(time.Now())
+		if err := st.ResetMonthTraffic(context.Background(), month); err != nil {
+			slog.Error("reset month traffic", "error", err)
+			os.Exit(1)
+		}
+		slog.Info("monthly traffic reset", "month", month, "db", *dbPath)
+		return
+	}
 
 	slog.Info("wg-conf starting", "listen", *listenAddr, "params", *paramsPath)
 
