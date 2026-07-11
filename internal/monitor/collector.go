@@ -81,6 +81,59 @@ func (c *Collector) collect(ctx context.Context) {
 			continue
 		}
 
+		baseline, hasBaseline, err := c.store.GetTrafficBaseline(ctx, p.Name, month)
+		if err != nil {
+			slog.Error("load traffic baseline", "peer", p.Name, "error", err)
+			continue
+		}
+		if !hasBaseline {
+			rx, tx := c.resolveBaseline(ctx, p.Name, prevMonth, s.ReceiveBytes, s.TransmitBytes)
+			baseline = store.TrafficBaseline{RxBytes: rx, TxBytes: tx}
+			if err := c.store.SetTrafficBaseline(ctx, p.Name, month, baseline); err != nil {
+				slog.Error("save traffic baseline", "peer", p.Name, "error", err)
+				continue
+			}
+		}
+
+		var prevSnap store.UsageSnapshot
+		hasPrevSnap := false
+		if snap, found, snapErr := c.store.GetLatestUsageSnapshot(ctx, p.Name); snapErr != nil {
+			slog.Error("load previous usage snapshot", "peer", p.Name, "error", snapErr)
+			continue
+		} else if found {
+			prevSnap = snap
+			hasPrevSnap = true
+		}
+
+		result := computeMonthTraffic(monthTrafficInput{
+			BaselineRx:     baseline.RxBytes,
+			BaselineTx:     baseline.TxBytes,
+			UploadOffset:   baseline.UploadOffset,
+			DownloadOffset: baseline.DownloadOffset,
+			CurrentRx:      s.ReceiveBytes,
+			CurrentTx:      s.TransmitBytes,
+			PrevRx:         prevSnap.RxBytes,
+			PrevTx:         prevSnap.TxBytes,
+			HasPrev:        hasPrevSnap,
+		})
+		if result.ReanchorBaseline {
+			if err := c.store.SetTrafficBaseline(ctx, p.Name, month, store.TrafficBaseline{
+				RxBytes:        result.BaselineRx,
+				TxBytes:        result.BaselineTx,
+				UploadOffset:   result.UploadOffset,
+				DownloadOffset: result.DownloadOffset,
+			}); err != nil {
+				slog.Error("reanchor traffic baseline", "peer", p.Name, "error", err)
+				continue
+			}
+			slog.Info("traffic counter reset detected", "peer", p.Name, "upload", result.Upload, "download", result.Download)
+		}
+
+		if err := c.store.SetMonthlyTraffic(ctx, p.Name, month, result.Upload, result.Download); err != nil {
+			slog.Error("set monthly traffic", "peer", p.Name, "error", err)
+			continue
+		}
+
 		snap := store.UsageSnapshot{
 			PeerName:      p.Name,
 			PublicKey:     p.PublicKey,
@@ -93,26 +146,6 @@ func (c *Collector) collect(ctx context.Context) {
 		}
 		if err := c.store.SaveUsageSnapshot(ctx, snap); err != nil {
 			slog.Error("save usage snapshot", "peer", p.Name, "error", err)
-			continue
-		}
-
-		baselineRx, baselineTx, hasBaseline, err := c.store.GetTrafficBaseline(ctx, p.Name, month)
-		if err != nil {
-			slog.Error("load traffic baseline", "peer", p.Name, "error", err)
-			continue
-		}
-		if !hasBaseline {
-			baselineRx, baselineTx = c.resolveBaseline(ctx, p.Name, prevMonth, s.ReceiveBytes, s.TransmitBytes)
-			if err := c.store.SetTrafficBaseline(ctx, p.Name, month, baselineRx, baselineTx); err != nil {
-				slog.Error("save traffic baseline", "peer", p.Name, "error", err)
-				continue
-			}
-		}
-
-		upload := traffic.ClientUploadDelta(baselineRx, s.ReceiveBytes)
-		download := traffic.ClientDownloadDelta(baselineTx, s.TransmitBytes)
-		if err := c.store.SetMonthlyTraffic(ctx, p.Name, month, upload, download); err != nil {
-			slog.Error("set monthly traffic", "peer", p.Name, "error", err)
 		}
 	}
 }

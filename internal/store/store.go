@@ -36,6 +36,13 @@ type MonthlyTraffic struct {
 	LimitExceeded  bool
 }
 
+type TrafficBaseline struct {
+	RxBytes        int64
+	TxBytes        int64
+	UploadOffset   int64
+	DownloadOffset int64
+}
+
 type UsageSnapshot struct {
 	PeerName      string
 	PublicKey     string
@@ -124,6 +131,8 @@ CREATE TABLE IF NOT EXISTS traffic_baselines (
     year_month TEXT NOT NULL,
     rx_bytes INTEGER NOT NULL DEFAULT 0,
     tx_bytes INTEGER NOT NULL DEFAULT 0,
+    upload_offset INTEGER NOT NULL DEFAULT 0,
+    download_offset INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (peer_name, year_month)
 );
 `
@@ -132,6 +141,8 @@ CREATE TABLE IF NOT EXISTS traffic_baselines (
 		return err
 	}
 	_, _ = s.db.Exec(`ALTER TABLE peers ADD COLUMN monthly_limit_bytes INTEGER NOT NULL DEFAULT 0`)
+	_, _ = s.db.Exec(`ALTER TABLE traffic_baselines ADD COLUMN upload_offset INTEGER NOT NULL DEFAULT 0`)
+	_, _ = s.db.Exec(`ALTER TABLE traffic_baselines ADD COLUMN download_offset INTEGER NOT NULL DEFAULT 0`)
 	return nil
 }
 
@@ -274,26 +285,73 @@ ON CONFLICT(peer_name, year_month) DO UPDATE SET
 	return err
 }
 
-func (s *Store) GetTrafficBaseline(ctx context.Context, peerName, yearMonth string) (rx, tx int64, ok bool, err error) {
+func (s *Store) GetTrafficBaseline(ctx context.Context, peerName, yearMonth string) (TrafficBaseline, bool, error) {
+	var b TrafficBaseline
+	err := s.db.QueryRowContext(ctx, `
+SELECT rx_bytes, tx_bytes, upload_offset, download_offset FROM traffic_baselines WHERE peer_name = ? AND year_month = ?
+`, peerName, yearMonth).Scan(&b.RxBytes, &b.TxBytes, &b.UploadOffset, &b.DownloadOffset)
+	if err == sql.ErrNoRows {
+		return TrafficBaseline{}, false, nil
+	}
+	if err != nil {
+		return TrafficBaseline{}, false, err
+	}
+	return b, true, nil
+}
+
+func (s *Store) SetTrafficBaseline(ctx context.Context, peerName, yearMonth string, baseline TrafficBaseline) error {
+	_, err := s.db.ExecContext(ctx, `
+INSERT INTO traffic_baselines (peer_name, year_month, rx_bytes, tx_bytes, upload_offset, download_offset)
+VALUES (?, ?, ?, ?, ?, ?)
+ON CONFLICT(peer_name, year_month) DO UPDATE SET
+    rx_bytes = excluded.rx_bytes,
+    tx_bytes = excluded.tx_bytes,
+    upload_offset = excluded.upload_offset,
+    download_offset = excluded.download_offset
+`, peerName, yearMonth, baseline.RxBytes, baseline.TxBytes, baseline.UploadOffset, baseline.DownloadOffset)
+	return err
+}
+
+func (s *Store) GetPeerMonthlyTraffic(ctx context.Context, peerName, yearMonth string) (upload, download int64, ok bool, err error) {
 	err = s.db.QueryRowContext(ctx, `
-SELECT rx_bytes, tx_bytes FROM traffic_baselines WHERE peer_name = ? AND year_month = ?
-`, peerName, yearMonth).Scan(&rx, &tx)
+SELECT upload_bytes, download_bytes FROM monthly_traffic WHERE peer_name = ? AND year_month = ?
+`, peerName, yearMonth).Scan(&upload, &download)
 	if err == sql.ErrNoRows {
 		return 0, 0, false, nil
 	}
 	if err != nil {
 		return 0, 0, false, err
 	}
-	return rx, tx, true, nil
+	return upload, download, true, nil
 }
 
-func (s *Store) SetTrafficBaseline(ctx context.Context, peerName, yearMonth string, rx, tx int64) error {
-	_, err := s.db.ExecContext(ctx, `
-INSERT INTO traffic_baselines (peer_name, year_month, rx_bytes, tx_bytes)
-VALUES (?, ?, ?, ?)
-ON CONFLICT(peer_name, year_month) DO NOTHING
-`, peerName, yearMonth, rx, tx)
-	return err
+func (s *Store) GetLatestUsageSnapshot(ctx context.Context, peerName string) (UsageSnapshot, bool, error) {
+	var snap UsageSnapshot
+	var hs sql.NullString
+	var online int
+	var collectedAt string
+	err := s.db.QueryRowContext(ctx, `
+SELECT peer_name, public_key, rx_bytes, tx_bytes, last_handshake, online, endpoint, collected_at
+FROM usage_snapshots
+WHERE peer_name = ?
+ORDER BY id DESC
+LIMIT 1
+`, peerName).Scan(
+		&snap.PeerName, &snap.PublicKey, &snap.RxBytes, &snap.TxBytes,
+		&hs, &online, &snap.Endpoint, &collectedAt,
+	)
+	if err == sql.ErrNoRows {
+		return UsageSnapshot{}, false, nil
+	}
+	if err != nil {
+		return UsageSnapshot{}, false, err
+	}
+	if hs.Valid {
+		snap.LastHandshake, _ = time.Parse(time.RFC3339, hs.String)
+	}
+	snap.Online = online == 1
+	snap.CollectedAt, _ = time.Parse(time.RFC3339, collectedAt)
+	return snap, true, nil
 }
 
 func (s *Store) HasTrafficInMonth(ctx context.Context, peerName, yearMonth string) (bool, error) {
