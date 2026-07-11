@@ -69,10 +69,10 @@ func (c *Collector) collect(ctx context.Context) {
 
 	now := time.Now().UTC()
 	month := traffic.MonthKey(now)
-	prev, err := c.store.LatestUsageByPeer(ctx)
+	prevMonth, err := traffic.PreviousMonthKey(month)
 	if err != nil {
-		slog.Error("load previous usage", "error", err)
-		prev = map[string]store.UsageSnapshot{}
+		slog.Error("previous month", "error", err)
+		return
 	}
 
 	for _, p := range peers {
@@ -80,6 +80,7 @@ func (c *Collector) collect(ctx context.Context) {
 		if !ok {
 			continue
 		}
+
 		snap := store.UsageSnapshot{
 			PeerName:      p.Name,
 			PublicKey:     p.PublicKey,
@@ -95,12 +96,36 @@ func (c *Collector) collect(ctx context.Context) {
 			continue
 		}
 
-		if last, ok := prev[p.Name]; ok {
-			upload := traffic.ClientUploadDelta(last.RxBytes, s.ReceiveBytes)
-			download := traffic.ClientDownloadDelta(last.TxBytes, s.TransmitBytes)
-			if err := c.store.AddMonthlyTraffic(ctx, p.Name, month, upload, download); err != nil {
-				slog.Error("add monthly traffic", "peer", p.Name, "error", err)
+		baselineRx, baselineTx, hasBaseline, err := c.store.GetTrafficBaseline(ctx, p.Name, month)
+		if err != nil {
+			slog.Error("load traffic baseline", "peer", p.Name, "error", err)
+			continue
+		}
+		if !hasBaseline {
+			baselineRx, baselineTx = c.resolveBaseline(ctx, p.Name, prevMonth, s.ReceiveBytes, s.TransmitBytes)
+			if err := c.store.SetTrafficBaseline(ctx, p.Name, month, baselineRx, baselineTx); err != nil {
+				slog.Error("save traffic baseline", "peer", p.Name, "error", err)
+				continue
 			}
 		}
+
+		upload := traffic.ClientUploadDelta(baselineRx, s.ReceiveBytes)
+		download := traffic.ClientDownloadDelta(baselineTx, s.TransmitBytes)
+		if err := c.store.SetMonthlyTraffic(ctx, p.Name, month, upload, download); err != nil {
+			slog.Error("set monthly traffic", "peer", p.Name, "error", err)
+		}
 	}
+}
+
+func (c *Collector) resolveBaseline(
+	ctx context.Context,
+	peerName, prevMonth string,
+	currentRx, currentTx int64,
+) (rx, tx int64) {
+	if hadPrev, err := c.store.HasTrafficInMonth(ctx, peerName, prevMonth); err == nil && hadPrev {
+		// New calendar month: start from counters at the first collect of the month.
+		return currentRx, currentTx
+	}
+	// First tracking: import current WireGuard totals (best effort for mid-month start).
+	return 0, 0
 }

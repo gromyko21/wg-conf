@@ -118,6 +118,14 @@ CREATE TABLE IF NOT EXISTS monthly_traffic (
     download_bytes INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (peer_name, year_month)
 );
+
+CREATE TABLE IF NOT EXISTS traffic_baselines (
+    peer_name TEXT NOT NULL,
+    year_month TEXT NOT NULL,
+    rx_bytes INTEGER NOT NULL DEFAULT 0,
+    tx_bytes INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (peer_name, year_month)
+);
 `
 	_, err := s.db.Exec(schema)
 	if err != nil {
@@ -243,18 +251,60 @@ WHERE id IN (SELECT MAX(id) FROM usage_snapshots GROUP BY peer_name)
 	return result, rows.Err()
 }
 
-func (s *Store) AddMonthlyTraffic(ctx context.Context, peerName, yearMonth string, uploadDelta, downloadDelta int64) error {
-	if uploadDelta <= 0 && downloadDelta <= 0 {
-		return nil
-	}
+func (s *Store) SetMonthlyTraffic(ctx context.Context, peerName, yearMonth string, uploadBytes, downloadBytes int64) error {
 	_, err := s.db.ExecContext(ctx, `
 INSERT INTO monthly_traffic (peer_name, year_month, upload_bytes, download_bytes)
 VALUES (?, ?, ?, ?)
 ON CONFLICT(peer_name, year_month) DO UPDATE SET
-    upload_bytes = upload_bytes + excluded.upload_bytes,
-    download_bytes = download_bytes + excluded.download_bytes
-`, peerName, yearMonth, uploadDelta, downloadDelta)
+    upload_bytes = excluded.upload_bytes,
+    download_bytes = excluded.download_bytes
+`, peerName, yearMonth, uploadBytes, downloadBytes)
 	return err
+}
+
+func (s *Store) GetTrafficBaseline(ctx context.Context, peerName, yearMonth string) (rx, tx int64, ok bool, err error) {
+	err = s.db.QueryRowContext(ctx, `
+SELECT rx_bytes, tx_bytes FROM traffic_baselines WHERE peer_name = ? AND year_month = ?
+`, peerName, yearMonth).Scan(&rx, &tx)
+	if err == sql.ErrNoRows {
+		return 0, 0, false, nil
+	}
+	if err != nil {
+		return 0, 0, false, err
+	}
+	return rx, tx, true, nil
+}
+
+func (s *Store) SetTrafficBaseline(ctx context.Context, peerName, yearMonth string, rx, tx int64) error {
+	_, err := s.db.ExecContext(ctx, `
+INSERT INTO traffic_baselines (peer_name, year_month, rx_bytes, tx_bytes)
+VALUES (?, ?, ?, ?)
+ON CONFLICT(peer_name, year_month) DO NOTHING
+`, peerName, yearMonth, rx, tx)
+	return err
+}
+
+func (s *Store) HasTrafficInMonth(ctx context.Context, peerName, yearMonth string) (bool, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx, `
+SELECT COUNT(1) FROM monthly_traffic WHERE peer_name = ? AND year_month = ?
+`, peerName, yearMonth).Scan(&n)
+	return n > 0, err
+}
+
+func (s *Store) EarliestSnapshotInMonth(ctx context.Context, peerName string, monthStart, monthEnd time.Time) (rx, tx int64, ok bool, err error) {
+	err = s.db.QueryRowContext(ctx, `
+SELECT rx_bytes, tx_bytes FROM usage_snapshots
+WHERE peer_name = ? AND collected_at >= ? AND collected_at < ?
+ORDER BY collected_at ASC LIMIT 1
+`, peerName, monthStart.UTC().Format(time.RFC3339), monthEnd.UTC().Format(time.RFC3339)).Scan(&rx, &tx)
+	if err == sql.ErrNoRows {
+		return 0, 0, false, nil
+	}
+	if err != nil {
+		return 0, 0, false, err
+	}
+	return rx, tx, true, nil
 }
 
 func (s *Store) MonthlyTrafficByPeer(ctx context.Context, yearMonth string) (map[string]MonthlyTraffic, error) {

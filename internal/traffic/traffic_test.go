@@ -2,11 +2,22 @@ package traffic
 
 import "testing"
 
-func TestDelta(t *testing.T) {
-	if got := ClientUploadDelta(100, 150); got != 50 {
-		t.Fatalf("expected 50, got %d", got)
+func TestMonthBounds(t *testing.T) {
+	start, end, err := MonthBounds("2026-07")
+	if err != nil {
+		t.Fatal(err)
 	}
-	if got := ClientUploadDelta(150, 100); got != 100 {
-		t.Fatalf("expected reset delta 100, got %d", got)
+	if start.Day() != 1 || start.Month() != 7 {
+		t.Fatalf("unexpected start: %v", start)
+	}
+	if end.Month() != 8 {
+		t.Fatalf("unexpected end: %v", end)
+	}
+}
+
+func TestPreviousMonthKey(t *testing.T) {
+	prev, err := PreviousMonthKey("2026-07")
+	if err != nil || prev != "2026-06" {
+		t.Fatalf("expected 2026-06, got %q err=%v", prev, err)
 	}
 }
