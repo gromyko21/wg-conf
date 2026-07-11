@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>wg-conf</title>
+  <style>
+    :root {
+      --bg: #0f1419;
+      --card: #1a2332;
+      --border: #2d3a4f;
+      --text: #e7ecf3;
+      --muted: #8b9cb3;
+      --accent: #3b82f6;
+      --green: #22c55e;
+      --red: #ef4444;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+    }
+    .wrap { max-width: 1100px; margin: 0 auto; padding: 24px; }
+    h1 { margin: 0 0 8px; font-size: 1.75rem; }
+    .sub { color: var(--muted); margin-bottom: 24px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 24px; }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 16px;
+    }
+    .card .label { color: var(--muted); font-size: 0.85rem; }
+    .card .value { font-size: 1.4rem; font-weight: 600; margin-top: 4px; }
+    .toolbar { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; align-items: center; }
+    input, button {
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: var(--card);
+      color: var(--text);
+      padding: 10px 12px;
+      font-size: 0.95rem;
+    }
+    button {
+      background: var(--accent);
+      border-color: var(--accent);
+      cursor: pointer;
+      font-weight: 600;
+    }
+    button.secondary { background: transparent; }
+    button.danger { background: var(--red); border-color: var(--red); }
+    table { width: 100%; border-collapse: collapse; }
+    th, td {
+      text-align: left;
+      padding: 12px;
+      border-bottom: 1px solid var(--border);
+      font-size: 0.9rem;
+    }
+    th { color: var(--muted); font-weight: 500; }
+    .badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-size: 0.75rem;
+      font-weight: 600;
+    }
+    .badge.online { background: rgba(34,197,94,.2); color: var(--green); }
+    .badge.offline { background: rgba(139,156,179,.15); color: var(--muted); }
+    .actions { display: flex; gap: 6px; flex-wrap: wrap; }
+    .actions button { padding: 6px 10px; font-size: 0.8rem; }
+    #modal {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,.6);
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+    #modal.open { display: flex; }
+    .modal-box {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 20px;
+      max-width: 520px;
+      width: 100%;
+    }
+    pre {
+      background: #0b1020;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 12px;
+      overflow: auto;
+      font-size: 0.8rem;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+    .error { color: var(--red); margin-top: 8px; }
+    .hidden { display: none; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>wg-conf</h1>
+    <p class="sub">Управление WireGuard peers и мониторинг</p>
+
+    <div id="auth-box" class="card" style="margin-bottom:20px">
+      <div class="toolbar">
+        <input id="api-key" type="password" placeholder="API ключ (если задан)" style="flex:1; min-width:200px">
+        <button onclick="saveKey()">Сохранить ключ</button>
+      </div>
+    </div>
+
+    <div class="grid">
+      <div class="card"><div class="label">Endpoint</div><div class="value" id="endpoint">—</div></div>
+      <div class="card"><div class="label">Online</div><div class="value" id="online-count">—</div></div>
+      <div class="card"><div class="label">Всего RX</div><div class="value" id="total-rx">—</div></div>
+      <div class="card"><div class="label">Всего TX</div><div class="value" id="total-tx">—</div></div>
+    </div>
+
+    <div class="card">
+      <div class="toolbar">
+        <input id="peer-name" placeholder="Имя клиента (max 15)" maxlength="15">
+        <button onclick="createPeer()">Добавить peer</button>
+        <button class="secondary" onclick="refresh()">Обновить</button>
+      </div>
+      <div id="error" class="error hidden"></div>
+      <table>
+        <thead>
+          <tr>
+            <th>Имя</th>
+            <th>IP</th>
+            <th>Статус</th>
+            <th>RX / TX</th>
+            <th>Handshake</th>
+            <th>Действия</th>
+          </tr>
+        </thead>
+        <tbody id="peers-body"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div id="modal">
+    <div class="modal-box">
+      <h3 id="modal-title">Конфиг клиента</h3>
+      <pre id="modal-config"></pre>
+      <div class="toolbar" style="margin-top:12px">
+        <button onclick="closeModal()">Закрыть</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const keyInput = document.getElementById('api-key');
+    keyInput.value = localStorage.getItem('wg-conf-api-key') || '';
+
+    function saveKey() {
+      localStorage.setItem('wg-conf-api-key', keyInput.value);
+      refresh();
+    }
+
+    function headers() {
+      const h = { 'Content-Type': 'application/json' };
+      const key = localStorage.getItem('wg-conf-api-key');
+      if (key) h['X-API-Key'] = key;
+      return h;
+    }
+
+    function fmtBytes(n) {
+      if (n == null) return '0 B';
+      const u = ['B','KB','MB','GB','TB'];
+      let i = 0, v = n;
+      while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; }
+      return v.toFixed(1) + ' ' + u[i];
+    }
+
+    function showError(msg) {
+      const el = document.getElementById('error');
+      el.textContent = msg;
+      el.classList.remove('hidden');
+    }
+
+    function clearError() {
+      document.getElementById('error').classList.add('hidden');
+    }
+
+    async function api(path, opts = {}) {
+      const res = await fetch('/api' + path, { headers: headers(), ...opts });
+      if (!res.ok) {
+        let msg = res.statusText;
+        try { const j = await res.json(); msg = j.error || msg; } catch {}
+        throw new Error(msg);
+      }
+      if (res.status === 204) return null;
+      const ct = res.headers.get('content-type') || '';
+      if (ct.includes('application/json')) return res.json();
+      return res.text();
+    }
+
+    async function refresh() {
+      clearError();
+      try {
+        const [server, peers, stats] = await Promise.all([
+          api('/server'),
+          api('/peers'),
+          api('/stats'),
+        ]);
+        document.getElementById('endpoint').textContent = server.endpoint;
+        document.getElementById('online-count').textContent = stats.online_peers + ' / ' + stats.tracked_peers;
+        document.getElementById('total-rx').textContent = fmtBytes(stats.total_rx_bytes);
+        document.getElementById('total-tx').textContent = fmtBytes(stats.total_tx_bytes);
+        renderPeers(peers);
+      } catch (e) {
+        showError(e.message);
+      }
+    }
+
+    function renderPeers(peers) {
+      const body = document.getElementById('peers-body');
+      body.innerHTML = '';
+      for (const p of peers) {
+        const tr = document.createElement('tr');
+        const hs = p.last_handshake ? new Date(p.last_handshake).toLocaleString() : '—';
+        tr.innerHTML = `
+          <td><strong>${p.name}</strong><br><small style="color:var(--muted)">${p.created_by || ''}</small></td>
+          <td>${p.ipv4}<br><small style="color:var(--muted)">${p.ipv6}</small></td>
+          <td><span class="badge ${p.online ? 'online' : 'offline'}">${p.online ? 'online' : 'offline'}</span></td>
+          <td>${fmtBytes(p.rx_bytes)} / ${fmtBytes(p.tx_bytes)}</td>
+          <td>${hs}</td>
+          <td class="actions">
+            <button class="secondary" onclick="showConfig('${p.name}')">Конфиг</button>
+            <button class="secondary" onclick="openQR('${p.name}')">QR</button>
+            <button class="danger" onclick="revokePeer('${p.name}')">Удалить</button>
+          </td>`;
+        body.appendChild(tr);
+      }
+    }
+
+    async function createPeer() {
+      clearError();
+      const name = document.getElementById('peer-name').value.trim();
+      if (!name) return showError('Введите имя клиента');
+      try {
+        const result = await api('/peers', {
+          method: 'POST',
+          body: JSON.stringify({ name }),
+        });
+        document.getElementById('peer-name').value = '';
+        document.getElementById('modal-title').textContent = 'Новый клиент: ' + result.name;
+        document.getElementById('modal-config').textContent = result.config;
+        document.getElementById('modal').classList.add('open');
+        await refresh();
+      } catch (e) {
+        showError(e.message);
+      }
+    }
+
+    async function showConfig(name) {
+      try {
+        const cfg = await api('/peers/' + encodeURIComponent(name) + '/config');
+        document.getElementById('modal-title').textContent = 'Конфиг: ' + name;
+        document.getElementById('modal-config').textContent = cfg;
+        document.getElementById('modal').classList.add('open');
+      } catch (e) {
+        showError(e.message);
+      }
+    }
+
+    function openQR(name) {
+      const key = localStorage.getItem('wg-conf-api-key');
+      let url = '/api/peers/' + encodeURIComponent(name) + '/qr';
+      if (key) url += '?_=' + Date.now();
+      const w = window.open('', '_blank');
+      fetch(url, { headers: key ? { 'X-API-Key': key } : {} })
+        .then(r => r.blob())
+        .then(b => {
+          w.document.write('<img src="' + URL.createObjectURL(b) + '" style="max-width:100%">');
+        })
+        .catch(e => showError(e.message));
+    }
+
+    async function revokePeer(name) {
+      if (!confirm('Удалить peer ' + name + '?')) return;
+      clearError();
+      try {
+        await api('/peers/' + encodeURIComponent(name), { method: 'DELETE' });
+        await refresh();
+      } catch (e) {
+        showError(e.message);
+      }
+    }
+
+    function closeModal() {
+      document.getElementById('modal').classList.remove('open');
+    }
+
+    refresh();
+    setInterval(refresh, 30000);
+  </script>
+</body>
+</html>
