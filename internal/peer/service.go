@@ -59,6 +59,7 @@ type PeerView struct {
 	MonthLabel         string    `json:"month_label"`
 	CreatedAt          time.Time `json:"created_at,omitempty"`
 	CreatedBy          string    `json:"created_by,omitempty"`
+	Enabled            bool      `json:"enabled"`
 }
 
 func NewService(params *config.ServerParams, wgDir string, clientsDirs []string, st *store.Store, wg *wireguard.Client) *Service {
@@ -88,12 +89,16 @@ func (s *Service) SyncFromConfig(ctx context.Context) error {
 			}
 		}
 		names[i] = p.Name
+		enabled := true
+		if existing, err := s.store.GetPeer(ctx, p.Name); err == nil && existing != nil {
+			enabled = existing.Enabled
+		}
 		records[i] = store.PeerRecord{
 			Name:         p.Name,
 			PublicKey:    p.PublicKey,
 			IPv4:         p.IPv4,
 			IPv6:         p.IPv6,
-			Enabled:      true,
+			Enabled:      enabled,
 			CreatedAt:    time.Now().UTC(),
 			ClientConfig: cfg,
 		}
@@ -132,12 +137,13 @@ func (s *Service) List(ctx context.Context) ([]PeerView, error) {
 			PublicKey:         p.PublicKey,
 			IPv4:              p.IPv4,
 			IPv6:              p.IPv6,
+			Enabled:           p.Enabled,
 			CreatedAt:         p.CreatedAt,
 			CreatedBy:         p.CreatedBy,
 			MonthlyLimitBytes: p.MonthlyLimitBytes,
 			MonthLabel:        month,
 		}
-		if u, ok := usage[p.Name]; ok {
+		if u, ok := usage[p.Name]; ok && p.Enabled {
 			v.Online = u.Online
 			v.LastActivity = u.LastHandshake
 		}
@@ -390,6 +396,98 @@ func (s *Service) Revoke(ctx context.Context, name, actor string) error {
 	}
 	clientfile.Remove(s.clientsDirs, s.params.ServerWGNIC, name)
 	return s.store.AddAudit(ctx, actor, "revoke", name, "")
+}
+
+func (s *Service) Stop(ctx context.Context, name, actor string) error {
+	if err := s.SyncFromConfig(ctx); err != nil {
+		return err
+	}
+
+	confPeer, err := s.findConfigPeer(name)
+	if err != nil {
+		return err
+	}
+
+	rec, err := s.store.GetPeer(ctx, name)
+	if err != nil {
+		return err
+	}
+	if rec != nil && !rec.Enabled {
+		return nil
+	}
+
+	publicKey := confPeer.PublicKey
+	if publicKey == "" && rec != nil {
+		publicKey = rec.PublicKey
+	}
+	if publicKey == "" {
+		return ErrPeerNotFound
+	}
+
+	if err := s.wg.RemovePeer(s.params.ServerWGNIC, publicKey); err != nil {
+		return err
+	}
+	if err := s.store.SetPeerEnabled(ctx, name, false); err != nil {
+		return err
+	}
+	return s.store.AddAudit(ctx, actor, "stop", name, "")
+}
+
+func (s *Service) Start(ctx context.Context, name, actor string) error {
+	if err := s.SyncFromConfig(ctx); err != nil {
+		return err
+	}
+
+	confPeer, err := s.findConfigPeer(name)
+	if err != nil {
+		return err
+	}
+
+	rec, err := s.store.GetPeer(ctx, name)
+	if err != nil {
+		return err
+	}
+	if rec != nil && rec.Enabled {
+		return nil
+	}
+
+	if err := s.wg.AddPeer(s.params.ServerWGNIC, confPeer.PublicKey, confPeer.Preshared, confPeer.AllowedIPs); err != nil {
+		return err
+	}
+	if err := s.store.SetPeerEnabled(ctx, name, true); err != nil {
+		return err
+	}
+	return s.store.AddAudit(ctx, actor, "start", name, "")
+}
+
+func (s *Service) ApplyDisabledPeers(ctx context.Context) error {
+	peers, err := s.store.ListPeers(ctx)
+	if err != nil {
+		return err
+	}
+	for _, p := range peers {
+		if p.Enabled || p.PublicKey == "" {
+			continue
+		}
+		if err := s.wg.RemovePeer(s.params.ServerWGNIC, p.PublicKey); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Service) findConfigPeer(name string) (*wgconf.Peer, error) {
+	confPath := s.params.WGConfPath(s.wgDir)
+	peers, err := wgconf.Parse(confPath)
+	if err != nil {
+		return nil, err
+	}
+	for _, p := range peers {
+		if p.Name == name {
+			return &p, nil
+		}
+	}
+	return nil, ErrPeerNotFound
 }
 
 func lastDot(s string) int {

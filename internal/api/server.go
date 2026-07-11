@@ -46,6 +46,8 @@ func (s *Server) Handler() http.Handler {
 		r.Get("/peers/{name}/config", s.handlePeerConfig)
 		r.Get("/peers/{name}/qr", s.handlePeerQR)
 		r.Delete("/peers/{name}", s.handleRevokePeer)
+		r.Post("/peers/{name}/stop", s.handleStopPeer)
+		r.Post("/peers/{name}/start", s.handleStartPeer)
 		r.Patch("/peers/{name}/limit", s.handleSetPeerLimit)
 		r.Get("/audit", s.handleAudit)
 		r.Get("/stats", s.handleStats)
@@ -174,6 +176,34 @@ func (s *Server) handleRevokePeer(w http.ResponseWriter, r *http.Request) {
 		slog.Error("revoke peer", "name", name, "error", err)
 		status := http.StatusInternalServerError
 		if errors.Is(err, peer.ErrPeerNotFound) || errors.Is(err, peer.ErrConfigMissing) {
+			status = http.StatusNotFound
+		}
+		writeError(w, status, err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleStopPeer(w http.ResponseWriter, r *http.Request) {
+	name := chi.URLParam(r, "name")
+	if err := s.peers.Stop(r.Context(), name, actorFromRequest(r)); err != nil {
+		slog.Error("stop peer", "name", name, "error", err)
+		status := http.StatusInternalServerError
+		if errors.Is(err, peer.ErrPeerNotFound) {
+			status = http.StatusNotFound
+		}
+		writeError(w, status, err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleStartPeer(w http.ResponseWriter, r *http.Request) {
+	name := chi.URLParam(r, "name")
+	if err := s.peers.Start(r.Context(), name, actorFromRequest(r)); err != nil {
+		slog.Error("start peer", "name", name, "error", err)
+		status := http.StatusInternalServerError
+		if errors.Is(err, peer.ErrPeerNotFound) {
 			status = http.StatusNotFound
 		}
 		writeError(w, status, err.Error())

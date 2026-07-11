@@ -52,6 +52,7 @@
     }
     button.secondary { background: transparent; }
     button.danger { background: var(--red); border-color: var(--red); }
+    button.warn { background: #f59e0b; border-color: #f59e0b; color: #111; }
     table { width: 100%; border-collapse: collapse; }
     th, td {
       text-align: left;
@@ -264,14 +265,21 @@
           ? `<div class="limit-bar"><span class="${p.limit_exceeded ? 'over' : ''}" style="width:${limitPct}%"></span></div>`
           : '';
         const limitBadge = p.limit_exceeded ? `<span class="badge warn">лимит</span><br>` : '';
+        const statusBadge = !p.enabled
+          ? '<span class="badge warn">остановлен</span>'
+          : `<span class="badge ${p.online ? 'online' : 'offline'}">${p.online ? 'online' : 'offline'}</span>`;
+        const stopStartBtn = p.enabled
+          ? `<button class="warn" onclick="stopPeer('${p.name}')">Остановить</button>`
+          : `<button onclick="startPeer('${p.name}')">Запустить</button>`;
         tr.innerHTML = `
           <td><strong>${p.name}</strong><br><small style="color:var(--muted)">${p.created_by || ''}</small></td>
           <td>${p.ipv4}<br><small style="color:var(--muted)">${p.ipv6}</small></td>
-          <td><span class="badge ${p.online ? 'online' : 'offline'}">${p.online ? 'online' : 'offline'}</span></td>
+          <td>${statusBadge}</td>
           <td>↓ ${fmtBytes(p.month_download_bytes)}<br>↑ ${fmtBytes(p.month_upload_bytes)}</td>
           <td>${limitBadge}${limitText}${limitBar}</td>
           <td>${hs}</td>
           <td class="actions">
+            ${stopStartBtn}
             <button class="secondary" onclick="setLimit('${p.name}', ${p.monthly_limit_bytes || 0})">Лимит</button>
             <button class="secondary" onclick="showConfig('${p.name}')">Конфиг</button>
             <button class="secondary" onclick="openQR('${p.name}')">QR</button>
@@ -339,6 +347,27 @@
           w.document.write('<img src="' + URL.createObjectURL(b) + '" style="max-width:100%">');
         })
         .catch(e => showError(e.message));
+    }
+
+    async function stopPeer(name) {
+      if (!confirm('Остановить peer ' + name + '? Клиент потеряет VPN-соединение.')) return;
+      clearError();
+      try {
+        await api('/peers/' + encodeURIComponent(name) + '/stop', { method: 'POST' });
+        await refresh();
+      } catch (e) {
+        showError(e.message);
+      }
+    }
+
+    async function startPeer(name) {
+      clearError();
+      try {
+        await api('/peers/' + encodeURIComponent(name) + '/start', { method: 'POST' });
+        await refresh();
+      } catch (e) {
+        showError(e.message);
+      }
     }
 
     async function revokePeer(name) {

@@ -162,6 +162,18 @@ func (s *Store) SetPeerLimit(ctx context.Context, name string, limitBytes int64)
 	return nil
 }
 
+func (s *Store) SetPeerEnabled(ctx context.Context, name string, enabled bool) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE peers SET enabled = ? WHERE name = ?`, boolToInt(enabled), name)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
 func (s *Store) DeletePeer(ctx context.Context, name string) error {
 	_, err := s.db.ExecContext(ctx, `DELETE FROM peers WHERE name = ?`, name)
 	return err

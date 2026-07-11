@@ -115,6 +115,9 @@ func main() {
 	if err := peerSvc.SyncFromConfig(ctx); err != nil {
 		slog.Warn("initial sync from config", "error", err)
 	}
+	if err := peerSvc.ApplyDisabledPeers(ctx); err != nil {
+		slog.Warn("apply disabled peers", "error", err)
+	}
 
 	collector := monitor.New(params, *wgDir, st, wg, *interval)
 	runCtx, cancel := context.WithCancel(context.Background())

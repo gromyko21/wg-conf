@@ -67,16 +67,16 @@ Open `http://server:8080/` — enter API key in the UI if set.
 
 ## API
 
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/api/server` | Server info |
-| GET | `/api/peers` | List peers with stats |
-| POST | `/api/peers` | Create peer `{"name":"alice"}` |
-| GET | `/api/peers/{name}/config` | Download client config |
-| GET | `/api/peers/{name}/qr` | QR code PNG |
-| DELETE | `/api/peers/{name}` | Revoke peer |
-| GET | `/api/stats` | Aggregated traffic stats |
-| GET | `/api/audit` | Audit log |
+| Method | Path                       | Description                    |
+| ------ | -------------------------- | ------------------------------ |
+| GET    | `/api/server`              | Server info                    |
+| GET    | `/api/peers`               | List peers with stats          |
+| POST   | `/api/peers`               | Create peer `{"name":"alice"}` |
+| GET    | `/api/peers/{name}/config` | Download client config         |
+| GET    | `/api/peers/{name}/qr`     | QR code PNG                    |
+| DELETE | `/api/peers/{name}`        | Revoke peer                    |
+| GET    | `/api/stats`               | Aggregated traffic stats       |
+| GET    | `/api/audit`               | Audit log                      |
 
 Auth: header `X-API-Key` or `Authorization: Bearer <key>`.
 
