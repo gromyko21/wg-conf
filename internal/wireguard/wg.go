@@ -30,7 +30,6 @@ func (c *Client) Close() error {
 // SyncConf applies config changes without restarting the interface.
 func SyncConf(iface, confPath string) error {
 	strip := exec.Command("wg-quick", "strip", iface)
-	strip.Env = append(strip.Environ(), "WG_CONFIG_FILE="+confPath)
 	var stripped bytes.Buffer
 	strip.Stdout = &stripped
 	if err := strip.Run(); err != nil {
@@ -41,6 +40,29 @@ func SyncConf(iface, confPath string) error {
 	sync.Stdin = &stripped
 	if out, err := sync.CombinedOutput(); err != nil {
 		return fmt.Errorf("wg syncconf: %w: %s", err, string(out))
+	}
+	_ = confPath
+	return nil
+}
+
+// AddPeer applies a peer to the live interface.
+func AddPeer(iface, publicKey, presharedKey, allowedIPs string) error {
+	cmd := exec.Command("wg", "set", iface,
+		"peer", publicKey,
+		"preshared-key", presharedKey,
+		"allowed-ips", allowedIPs,
+	)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("wg set peer: %w: %s", err, string(out))
+	}
+	return nil
+}
+
+// RemovePeer removes a peer from the live interface.
+func RemovePeer(iface, publicKey string) error {
+	cmd := exec.Command("wg", "set", iface, "peer", publicKey, "remove")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("wg set peer remove: %w: %s", err, string(out))
 	}
 	return nil
 }

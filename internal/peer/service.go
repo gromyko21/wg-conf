@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/user/wg-conf/internal/clientfile"
 	"github.com/user/wg-conf/internal/config"
 	"github.com/user/wg-conf/internal/keys"
 	"github.com/user/wg-conf/internal/store"
@@ -18,18 +19,19 @@ import (
 var nameRe = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,15}$`)
 
 var (
-	ErrPeerExists   = errors.New("peer already exists")
-	ErrPeerNotFound = errors.New("peer not found")
-	ErrInvalidName  = errors.New("invalid peer name")
-	ErrNoFreeIP     = errors.New("no free IP addresses in subnet")
+	ErrPeerExists    = errors.New("peer already exists")
+	ErrPeerNotFound  = errors.New("peer not found")
+	ErrConfigMissing = errors.New("client config not found (peer was created outside wg-conf)")
+	ErrInvalidName   = errors.New("invalid peer name")
+	ErrNoFreeIP      = errors.New("no free IP addresses in subnet")
 )
 
 type Service struct {
-	params   *config.ServerParams
-	wgDir    string
-	clients  string
-	store    *store.Store
-	wg       *wireguard.Client
+	params      *config.ServerParams
+	wgDir       string
+	clientsDirs []string
+	store       *store.Store
+	wg          *wireguard.Client
 }
 
 type CreateResult struct {
@@ -55,13 +57,13 @@ type PeerView struct {
 	CreatedBy     string    `json:"created_by,omitempty"`
 }
 
-func NewService(params *config.ServerParams, wgDir, clientsDir string, st *store.Store, wg *wireguard.Client) *Service {
+func NewService(params *config.ServerParams, wgDir string, clientsDirs []string, st *store.Store, wg *wireguard.Client) *Service {
 	return &Service{
-		params:  params,
-		wgDir:   wgDir,
-		clients: clientsDir,
-		store:   st,
-		wg:      wg,
+		params:      params,
+		wgDir:       wgDir,
+		clientsDirs: clientsDirs,
+		store:       st,
+		wg:          wg,
 	}
 }
 
@@ -74,13 +76,15 @@ func (s *Service) SyncFromConfig(ctx context.Context) error {
 
 	records := make([]store.PeerRecord, len(peers))
 	for i, p := range peers {
+		cfg, _ := clientfile.Load(s.clientsDirs, s.params.ServerWGNIC, p.Name)
 		records[i] = store.PeerRecord{
-			Name:      p.Name,
-			PublicKey: p.PublicKey,
-			IPv4:      p.IPv4,
-			IPv6:      p.IPv6,
-			Enabled:   true,
-			CreatedAt: time.Now().UTC(),
+			Name:         p.Name,
+			PublicKey:    p.PublicKey,
+			IPv4:         p.IPv4,
+			IPv6:         p.IPv6,
+			Enabled:      true,
+			CreatedAt:    time.Now().UTC(),
+			ClientConfig: cfg,
 		}
 	}
 	return s.store.SyncPeersFromConfig(ctx, records)
@@ -178,7 +182,7 @@ func (s *Service) Create(ctx context.Context, name, actor string) (*CreateResult
 		return nil, err
 	}
 
-	if err := wireguard.SyncConf(s.params.ServerWGNIC, confPath); err != nil {
+	if err := wireguard.AddPeer(s.params.ServerWGNIC, keyPair.Public, psk, allowedIPs); err != nil {
 		_ = wgconf.RemovePeer(confPath, name)
 		return nil, err
 	}
@@ -211,6 +215,10 @@ func (s *Service) Create(ctx context.Context, name, actor string) (*CreateResult
 	}
 	_ = s.store.AddAudit(ctx, actor, "create", name, clientIPv4)
 
+	for _, dir := range s.clientsDirs {
+		_ = clientfile.Save(dir, s.params.ServerWGNIC, name, clientConfig)
+	}
+
 	return &CreateResult{
 		Name:      name,
 		PublicKey: keyPair.Public,
@@ -226,10 +234,38 @@ func (s *Service) GetConfig(ctx context.Context, name string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if rec == nil || rec.ClientConfig == "" {
-		return "", ErrPeerNotFound
+	if rec != nil && rec.ClientConfig != "" {
+		return rec.ClientConfig, nil
 	}
-	return rec.ClientConfig, nil
+
+	cfg, err := clientfile.Load(s.clientsDirs, s.params.ServerWGNIC, name)
+	if err == nil {
+		if rec != nil {
+			_ = s.store.UpsertPeer(ctx, store.PeerRecord{
+				Name:         rec.Name,
+				PublicKey:    rec.PublicKey,
+				IPv4:         rec.IPv4,
+				IPv6:         rec.IPv6,
+				Enabled:      rec.Enabled,
+				CreatedAt:    rec.CreatedAt,
+				CreatedBy:    rec.CreatedBy,
+				ClientConfig: cfg,
+			})
+		}
+		return cfg, nil
+	}
+
+	confPath := s.params.WGConfPath(s.wgDir)
+	peers, parseErr := wgconf.Parse(confPath)
+	if parseErr != nil {
+		return "", parseErr
+	}
+	for _, p := range peers {
+		if p.Name == name {
+			return "", ErrConfigMissing
+		}
+	}
+	return "", ErrPeerNotFound
 }
 
 func (s *Service) Revoke(ctx context.Context, name, actor string) error {
@@ -240,9 +276,11 @@ func (s *Service) Revoke(ctx context.Context, name, actor string) error {
 	}
 
 	found := false
+	var publicKey string
 	for _, p := range peers {
 		if p.Name == name {
 			found = true
+			publicKey = p.PublicKey
 			break
 		}
 	}
@@ -253,12 +291,13 @@ func (s *Service) Revoke(ctx context.Context, name, actor string) error {
 	if err := wgconf.RemovePeer(confPath, name); err != nil {
 		return err
 	}
-	if err := wireguard.SyncConf(s.params.ServerWGNIC, confPath); err != nil {
+	if err := wireguard.RemovePeer(s.params.ServerWGNIC, publicKey); err != nil {
 		return err
 	}
 	if err := s.store.DeletePeer(ctx, name); err != nil {
 		return err
 	}
+	clientfile.Remove(s.clientsDirs, s.params.ServerWGNIC, name)
 	return s.store.AddAudit(ctx, actor, "revoke", name, "")
 }
 

@@ -254,10 +254,14 @@ func (s *Store) SyncPeersFromConfig(ctx context.Context, peers []PeerRecord) err
 
 	for _, p := range peers {
 		_, err := tx.ExecContext(ctx, `
-INSERT INTO peers (name, public_key, ipv4, ipv6, enabled, created_at, created_by)
-VALUES (?, ?, ?, ?, 1, ?, 'import')
-ON CONFLICT(name) DO UPDATE SET public_key=excluded.public_key, ipv4=excluded.ipv4, ipv6=excluded.ipv6
-`, p.Name, p.PublicKey, p.IPv4, p.IPv6, p.CreatedAt.UTC().Format(time.RFC3339))
+INSERT INTO peers (name, public_key, ipv4, ipv6, enabled, created_at, created_by, client_config)
+VALUES (?, ?, ?, ?, 1, ?, 'import', ?)
+ON CONFLICT(name) DO UPDATE SET
+	public_key=excluded.public_key,
+	ipv4=excluded.ipv4,
+	ipv6=excluded.ipv6,
+	client_config=CASE WHEN excluded.client_config != '' THEN excluded.client_config ELSE peers.client_config END
+`, p.Name, p.PublicKey, p.IPv4, p.IPv6, p.CreatedAt.UTC().Format(time.RFC3339), p.ClientConfig)
 		if err != nil {
 			return err
 		}

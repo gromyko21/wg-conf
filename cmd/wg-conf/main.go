@@ -36,6 +36,7 @@ func main() {
 		wgDir      = flag.String("wg-dir", "/etc/wireguard", "WireGuard config directory")
 		dbPath     = flag.String("db", "/var/lib/wg-conf/wg-conf.db", "SQLite database path")
 		apiKey     = flag.String("api-key", os.Getenv("WG_CONF_API_KEY"), "API key for authentication")
+		clientsDir = flag.String("clients-dir", "/root", "directory with angristan client configs (wg0-client-*.conf)")
 		interval   = flag.Duration("monitor-interval", 30*time.Second, "stats collection interval")
 	)
 	flag.Parse()
@@ -46,6 +47,7 @@ func main() {
 		*paramsPath = "dev/params"
 		*wgDir = "dev"
 		*dbPath = "dev/wg-conf.db"
+		*clientsDir = "dev"
 		slog.Info("dev mode enabled", "params", *paramsPath, "wg_dir", *wgDir, "db", *dbPath)
 	}
 
@@ -81,7 +83,7 @@ func main() {
 	}
 	defer wg.Close()
 
-	peerSvc := peer.NewService(params, *wgDir, "", st, wg)
+	peerSvc := peer.NewService(params, *wgDir, []string{*clientsDir}, st, wg)
 	ctx := context.Background()
 	if err := peerSvc.SyncFromConfig(ctx); err != nil {
 		slog.Warn("initial sync from config", "error", err)

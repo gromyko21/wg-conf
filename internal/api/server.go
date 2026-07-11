@@ -131,7 +131,7 @@ func (s *Server) handlePeerConfig(w http.ResponseWriter, r *http.Request) {
 	cfg, err := s.peers.GetConfig(r.Context(), name)
 	if err != nil {
 		status := http.StatusInternalServerError
-		if errors.Is(err, peer.ErrPeerNotFound) {
+		if errors.Is(err, peer.ErrPeerNotFound) || errors.Is(err, peer.ErrConfigMissing) {
 			status = http.StatusNotFound
 		}
 		writeError(w, status, err.Error())
@@ -147,7 +147,7 @@ func (s *Server) handlePeerQR(w http.ResponseWriter, r *http.Request) {
 	cfg, err := s.peers.GetConfig(r.Context(), name)
 	if err != nil {
 		status := http.StatusInternalServerError
-		if errors.Is(err, peer.ErrPeerNotFound) {
+		if errors.Is(err, peer.ErrPeerNotFound) || errors.Is(err, peer.ErrConfigMissing) {
 			status = http.StatusNotFound
 		}
 		writeError(w, status, err.Error())
@@ -167,7 +167,7 @@ func (s *Server) handleRevokePeer(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "name")
 	if err := s.peers.Revoke(r.Context(), name, actorFromRequest(r)); err != nil {
 		status := http.StatusInternalServerError
-		if errors.Is(err, peer.ErrPeerNotFound) {
+		if errors.Is(err, peer.ErrPeerNotFound) || errors.Is(err, peer.ErrConfigMissing) {
 			status = http.StatusNotFound
 		}
 		writeError(w, status, err.Error())

@@ -46,6 +46,12 @@ export WG_CONF_API_KEY="your-secret-key"
 ./wg-conf -listen :8080
 ```
 
+По умолчанию клиентские конфиги ищутся в `/root/` (формат angristan: `wg0-client-ИМЯ.conf`). Если файлы лежат в другом месте:
+
+```bash
+./wg-conf -clients-dir /root -listen :8080
+```
+
 Ожидаемый вывод при успешном старте:
 
 ```
