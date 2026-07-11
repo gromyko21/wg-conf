@@ -105,6 +105,16 @@ func (c *Collector) collect(ctx context.Context) {
 			hasPrevSnap = true
 		}
 
+		storedUpload, storedDownload := int64(0), int64(0)
+		hasStored := false
+		if up, down, found, monthErr := c.store.GetPeerMonthlyTraffic(ctx, p.Name, month); monthErr != nil {
+			slog.Error("load monthly traffic", "peer", p.Name, "error", monthErr)
+			continue
+		} else if found {
+			storedUpload, storedDownload = up, down
+			hasStored = true
+		}
+
 		result := computeMonthTraffic(monthTrafficInput{
 			BaselineRx:     baseline.RxBytes,
 			BaselineTx:     baseline.TxBytes,
@@ -115,6 +125,9 @@ func (c *Collector) collect(ctx context.Context) {
 			PrevRx:         prevSnap.RxBytes,
 			PrevTx:         prevSnap.TxBytes,
 			HasPrev:        hasPrevSnap,
+			StoredUpload:   storedUpload,
+			StoredDownload: storedDownload,
+			HasStored:      hasStored,
 		})
 		if result.ReanchorBaseline {
 			if err := c.store.SetTrafficBaseline(ctx, p.Name, month, store.TrafficBaseline{

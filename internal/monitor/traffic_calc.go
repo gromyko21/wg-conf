@@ -8,6 +8,8 @@ type monthTrafficInput struct {
 	CurrentRx, CurrentTx         int64
 	PrevRx, PrevTx               int64
 	HasPrev                      bool
+	StoredUpload, StoredDownload int64
+	HasStored                    bool
 }
 
 type monthTrafficResult struct {
@@ -18,7 +20,7 @@ type monthTrafficResult struct {
 }
 
 func computeMonthTraffic(in monthTrafficInput) monthTrafficResult {
-	counterReset := in.CurrentRx < in.BaselineRx || in.CurrentTx < in.BaselineTx
+	counterReset := countersDropped(in)
 	if !counterReset {
 		return monthTrafficResult{
 			Upload:         in.UploadOffset + traffic.ClientUploadDelta(in.BaselineRx, in.CurrentRx),
@@ -30,17 +32,18 @@ func computeMonthTraffic(in monthTrafficInput) monthTrafficResult {
 		}
 	}
 
-	segmentUpload := traffic.ClientUploadDelta(in.BaselineRx, in.PrevRx)
-	if !in.HasPrev || in.PrevRx < in.BaselineRx {
-		segmentUpload = 0
-	}
-	segmentDownload := traffic.ClientDownloadDelta(in.BaselineTx, in.PrevTx)
-	if !in.HasPrev || in.PrevTx < in.BaselineTx {
-		segmentDownload = 0
-	}
+	segmentUpload := segmentBeforeReset(in.BaselineRx, in.PrevRx, in.HasPrev)
+	segmentDownload := segmentBeforeReset(in.BaselineTx, in.PrevTx, in.HasPrev)
 
 	newUploadOffset := in.UploadOffset + segmentUpload
 	newDownloadOffset := in.DownloadOffset + segmentDownload
+
+	if newUploadOffset == in.UploadOffset && in.HasStored && in.StoredUpload > newUploadOffset {
+		newUploadOffset = in.StoredUpload
+	}
+	if newDownloadOffset == in.DownloadOffset && in.HasStored && in.StoredDownload > newDownloadOffset {
+		newDownloadOffset = in.StoredDownload
+	}
 
 	return monthTrafficResult{
 		Upload:           newUploadOffset + traffic.ClientUploadDelta(0, in.CurrentRx),
@@ -51,4 +54,18 @@ func computeMonthTraffic(in monthTrafficInput) monthTrafficResult {
 		DownloadOffset:   newDownloadOffset,
 		ReanchorBaseline: true,
 	}
+}
+
+func countersDropped(in monthTrafficInput) bool {
+	if in.HasPrev && (in.CurrentRx < in.PrevRx || in.CurrentTx < in.PrevTx) {
+		return true
+	}
+	return in.CurrentRx < in.BaselineRx || in.CurrentTx < in.BaselineTx
+}
+
+func segmentBeforeReset(baseline, prev int64, hasPrev bool) int64 {
+	if hasPrev && prev >= baseline {
+		return traffic.ClientUploadDelta(baseline, prev)
+	}
+	return 0
 }
