@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -111,6 +112,7 @@ func (s *Server) handleCreatePeer(w http.ResponseWriter, r *http.Request) {
 
 	result, err := s.peers.Create(r.Context(), req.Name, actorFromRequest(r))
 	if err != nil {
+		slog.Error("create peer", "name", req.Name, "error", err)
 		status := http.StatusInternalServerError
 		switch {
 		case errors.Is(err, peer.ErrInvalidName):
@@ -166,6 +168,7 @@ func (s *Server) handlePeerQR(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleRevokePeer(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "name")
 	if err := s.peers.Revoke(r.Context(), name, actorFromRequest(r)); err != nil {
+		slog.Error("revoke peer", "name", name, "error", err)
 		status := http.StatusInternalServerError
 		if errors.Is(err, peer.ErrPeerNotFound) || errors.Is(err, peer.ErrConfigMissing) {
 			status = http.StatusNotFound

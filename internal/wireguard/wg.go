@@ -3,7 +3,9 @@ package wireguard
 import (
 	"bytes"
 	"fmt"
+	"net"
 	"os/exec"
+	"strings"
 	"time"
 
 	"golang.zx2c4.com/wireguard/wgctrl"
@@ -46,35 +48,81 @@ func SyncConf(iface, confPath string) error {
 }
 
 // AddPeer applies a peer to the live interface.
-func AddPeer(iface, publicKey, presharedKey, allowedIPs string) error {
-	cmd := exec.Command("wg", "set", iface,
-		"peer", publicKey,
-		"preshared-key", presharedKey,
-		"allowed-ips", allowedIPs,
-	)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("wg set peer: %w: %s", err, string(out))
+func (c *Client) AddPeer(iface, publicKey, presharedKey, allowedIPs string) error {
+	pub, err := wgtypes.ParseKey(publicKey)
+	if err != nil {
+		return fmt.Errorf("parse public key: %w", err)
+	}
+
+	peer := wgtypes.PeerConfig{
+		PublicKey:  pub,
+		AllowedIPs: nil,
+	}
+	if presharedKey != "" {
+		psk, err := wgtypes.ParseKey(presharedKey)
+		if err != nil {
+			return fmt.Errorf("parse preshared key: %w", err)
+		}
+		peer.PresharedKey = &psk
+	}
+
+	ips, err := parseAllowedIPs(allowedIPs)
+	if err != nil {
+		return err
+	}
+	peer.AllowedIPs = ips
+
+	if err := c.ctrl.ConfigureDevice(iface, wgtypes.Config{Peers: []wgtypes.PeerConfig{peer}}); err != nil {
+		return fmt.Errorf("configure device: %w", err)
 	}
 	return nil
 }
 
 // RemovePeer removes a peer from the live interface.
-func RemovePeer(iface, publicKey string) error {
-	cmd := exec.Command("wg", "set", iface, "peer", publicKey, "remove")
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("wg set peer remove: %w: %s", err, string(out))
+func (c *Client) RemovePeer(iface, publicKey string) error {
+	pub, err := wgtypes.ParseKey(publicKey)
+	if err != nil {
+		return fmt.Errorf("parse public key: %w", err)
+	}
+	if err := c.ctrl.ConfigureDevice(iface, wgtypes.Config{
+		Peers: []wgtypes.PeerConfig{{
+			PublicKey: pub,
+			Remove:    true,
+		}},
+	}); err != nil {
+		return fmt.Errorf("configure device remove peer: %w", err)
 	}
 	return nil
 }
 
+func parseAllowedIPs(raw string) ([]net.IPNet, error) {
+	parts := strings.Split(raw, ",")
+	out := make([]net.IPNet, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		_, ipnet, err := net.ParseCIDR(part)
+		if err != nil {
+			return nil, fmt.Errorf("parse allowed ip %q: %w", part, err)
+		}
+		out = append(out, *ipnet)
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("no allowed ips provided")
+	}
+	return out, nil
+}
+
 // PeerStats holds runtime statistics for a peer.
 type PeerStats struct {
-	PublicKey      string
-	Endpoint       string
-	ReceiveBytes   int64
-	TransmitBytes  int64
-	LastHandshake  time.Time
-	Online         bool
+	PublicKey     string
+	Endpoint      string
+	ReceiveBytes  int64
+	TransmitBytes int64
+	LastHandshake time.Time
+	Online        bool
 }
 
 const onlineThreshold = 3 * time.Minute

@@ -192,7 +192,7 @@ func (s *Service) Create(ctx context.Context, name, actor string) (*CreateResult
 		return nil, err
 	}
 
-	if err := wireguard.AddPeer(s.params.ServerWGNIC, keyPair.Public, psk, allowedIPs); err != nil {
+	if err := s.wg.AddPeer(s.params.ServerWGNIC, keyPair.Public, psk, allowedIPs); err != nil {
 		_ = wgconf.RemovePeer(confPath, name)
 		return nil, err
 	}
@@ -323,7 +323,7 @@ func (s *Service) Revoke(ctx context.Context, name, actor string) error {
 	if err := wgconf.RemovePeer(confPath, name); err != nil {
 		return err
 	}
-	if err := wireguard.RemovePeer(s.params.ServerWGNIC, publicKey); err != nil {
+	if err := s.wg.RemovePeer(s.params.ServerWGNIC, publicKey); err != nil {
 		return err
 	}
 	if err := s.store.DeletePeer(ctx, name); err != nil {
