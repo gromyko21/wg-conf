@@ -5,10 +5,12 @@ import (
 	"errors"
 	"flag"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -24,6 +26,9 @@ import (
 )
 
 func main() {
+	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	slog.SetDefault(log)
+
 	var (
 		devMode    = flag.Bool("dev", false, "use ./dev fixtures for local development")
 		listenAddr = flag.String("listen", ":8080", "HTTP listen address")
@@ -34,6 +39,8 @@ func main() {
 		interval   = flag.Duration("monitor-interval", 30*time.Second, "stats collection interval")
 	)
 	flag.Parse()
+
+	slog.Info("wg-conf starting", "listen", *listenAddr, "params", *paramsPath)
 
 	if *devMode {
 		*paramsPath = "dev/params"
@@ -107,7 +114,7 @@ func main() {
 	}
 
 	go func() {
-		slog.Info("starting server", "addr", *listenAddr, "interface", params.ServerWGNIC)
+		slog.Info("HTTP server listening", "addr", *listenAddr, "interface", params.ServerWGNIC, "url", "http://"+formatListenURL(*listenAddr))
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			slog.Error("server error", "error", err)
 			os.Exit(1)
@@ -123,4 +130,17 @@ func main() {
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutdownCancel()
 	_ = server.Shutdown(shutdownCtx)
+}
+
+func formatListenURL(addr string) string {
+	if strings.HasPrefix(addr, ":") {
+		return "localhost" + addr
+	}
+	if strings.Count(addr, ":") == 1 && !strings.Contains(addr, "[") {
+		host, port, err := net.SplitHostPort(addr)
+		if err == nil && (host == "" || host == "0.0.0.0" || host == "::") {
+			return "localhost:" + port
+		}
+	}
+	return addr
 }

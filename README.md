@@ -34,13 +34,28 @@ go run ./cmd/wg-conf -dev
 **Production** (on server with angristan WireGuard):
 
 ```bash
+# 1. Проверьте, что WireGuard установлен
+ls -la /etc/wireguard/params /etc/wireguard/wg0.conf
+systemctl status wg-quick@wg0
+
+# 2. Соберите бинарник (быстрее и надёжнее, чем go run)
+go build -o wg-conf ./cmd/wg-conf
+
+# 3. Запуск
 export WG_CONF_API_KEY="your-secret-key"
-sudo ./wg-conf \
-  -listen :8080 \
-  -params /etc/wireguard/params \
-  -wg-dir /etc/wireguard \
-  -db /var/lib/wg-conf/wg-conf.db
+./wg-conf -listen :8080
 ```
+
+Ожидаемый вывод при успешном старте:
+
+```
+level=INFO msg="wg-conf starting" listen=:8080 params=/etc/wireguard/params
+level=INFO msg="HTTP server listening" addr=:8080 interface=wg0 url=http://localhost:8080
+```
+
+Откройте в браузере `http://IP-СЕРВЕРА:8080`. Если порт закрыт — откройте его в firewall.
+
+`go run` при первом запуске может молча компилировать 1–3 минуты (скачивание зависимостей). Лучше использовать `go build`.
 
 Open `http://server:8080/` — enter API key in the UI if set.
 
