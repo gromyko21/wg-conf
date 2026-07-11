@@ -16,6 +16,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/user/wg-conf/internal/devsetup"
 	"github.com/user/wg-conf/internal/api"
 	"github.com/user/wg-conf/internal/config"
 	"github.com/user/wg-conf/internal/monitor"
@@ -44,6 +45,10 @@ func main() {
 	slog.Info("wg-conf starting", "listen", *listenAddr, "params", *paramsPath)
 
 	if *devMode {
+		if err := devsetup.Ensure("dev"); err != nil {
+			slog.Error("prepare dev fixtures", "error", err)
+			os.Exit(1)
+		}
 		*paramsPath = "dev/params"
 		*wgDir = "dev"
 		*dbPath = "dev/wg-conf.db"

@@ -1,3 +1,6 @@
 /wg-conf
+dev/params
+dev/wg0.conf
+dev/wg0-client-*.conf
 dev/wg-conf.db
 dev/wg-conf.db-*
