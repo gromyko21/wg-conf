@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -14,6 +15,7 @@ import (
 	"github.com/user/wg-conf/internal/config"
 	"github.com/user/wg-conf/internal/peer"
 	"github.com/user/wg-conf/internal/store"
+	"github.com/user/wg-conf/internal/traffic"
 )
 
 type Server struct {
@@ -44,6 +46,7 @@ func (s *Server) Handler() http.Handler {
 		r.Get("/peers/{name}/config", s.handlePeerConfig)
 		r.Get("/peers/{name}/qr", s.handlePeerQR)
 		r.Delete("/peers/{name}", s.handleRevokePeer)
+		r.Patch("/peers/{name}/limit", s.handleSetPeerLimit)
 		r.Get("/audit", s.handleAudit)
 		r.Get("/stats", s.handleStats)
 	})
@@ -179,6 +182,34 @@ func (s *Server) handleRevokePeer(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func (s *Server) handleSetPeerLimit(w http.ResponseWriter, r *http.Request) {
+	name := chi.URLParam(r, "name")
+	var req struct {
+		LimitGB float64 `json:"limit_gb"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json body")
+		return
+	}
+	if req.LimitGB < 0 {
+		writeError(w, http.StatusBadRequest, "limit_gb must be >= 0")
+		return
+	}
+
+	if err := s.peers.SetLimit(r.Context(), name, req.LimitGB, actorFromRequest(r)); err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, peer.ErrPeerNotFound) {
+			status = http.StatusNotFound
+		}
+		writeError(w, status, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"name":     name,
+		"limit_gb": req.LimitGB,
+	})
+}
+
 func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {
 	entries, err := s.store.ListAudit(r.Context(), 100)
 	if err != nil {
@@ -189,28 +220,47 @@ func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
+	month := traffic.MonthKey(time.Now())
+	upload, download, err := s.store.MonthlyTrafficTotals(r.Context(), month)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
 	usage, err := s.store.LatestUsageByPeer(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
-	var totalRx, totalTx int64
+	monthly, err := s.store.MonthlyTrafficByPeer(r.Context(), month)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
 	online := 0
+	overLimit := 0
 	for _, u := range usage {
-		totalRx += u.RxBytes
-		totalTx += u.TxBytes
 		if u.Online {
 			online++
 		}
 	}
+	for _, m := range monthly {
+		if m.LimitExceeded {
+			overLimit++
+		}
+	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"total_rx_bytes": totalRx,
-		"total_tx_bytes": totalTx,
-		"online_peers":   online,
-		"tracked_peers":  len(usage),
-		"by_peer":        usage,
+		"month":                 month,
+		"month_upload_bytes":    upload,
+		"month_download_bytes":  download,
+		"month_total_bytes":     upload + download,
+		"online_peers":          online,
+		"tracked_peers":         len(usage),
+		"over_limit_peers":      overLimit,
+		"by_peer":               monthly,
 	})
 }
 

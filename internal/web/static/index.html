@@ -69,6 +69,20 @@
     }
     .badge.online { background: rgba(34,197,94,.2); color: var(--green); }
     .badge.offline { background: rgba(139,156,179,.15); color: var(--muted); }
+    .badge.warn { background: rgba(239,68,68,.2); color: var(--red); }
+    .limit-bar {
+      height: 6px;
+      background: #2d3a4f;
+      border-radius: 999px;
+      overflow: hidden;
+      margin-top: 6px;
+    }
+    .limit-bar > span {
+      display: block;
+      height: 100%;
+      background: var(--accent);
+    }
+    .limit-bar > span.over { background: var(--red); }
     .actions { display: flex; gap: 6px; flex-wrap: wrap; }
     .actions button { padding: 6px 10px; font-size: 0.8rem; }
     #modal {
@@ -118,9 +132,10 @@
     <div class="grid">
       <div class="card"><div class="label">Endpoint</div><div class="value" id="endpoint">—</div></div>
       <div class="card"><div class="label">Online</div><div class="value" id="online-count">—</div></div>
-      <div class="card"><div class="label">Всего RX</div><div class="value" id="total-rx">—</div></div>
-      <div class="card"><div class="label">Всего TX</div><div class="value" id="total-tx">—</div></div>
+      <div class="card"><div class="label">Скачано за месяц</div><div class="value" id="total-download">—</div></div>
+      <div class="card"><div class="label">Отдано за месяц</div><div class="value" id="total-upload">—</div></div>
     </div>
+    <p class="sub" id="month-label" style="margin-top:-12px">Статистика за текущий месяц</p>
 
     <div class="card">
       <div class="toolbar">
@@ -135,8 +150,9 @@
             <th>Имя</th>
             <th>IP</th>
             <th>Статус</th>
-            <th>RX / TX</th>
-            <th>Handshake</th>
+            <th>Трафик за месяц</th>
+            <th>Лимит</th>
+            <th>Последняя активность</th>
             <th>Действия</th>
           </tr>
         </thead>
@@ -202,6 +218,19 @@
       return res.text();
     }
 
+    function fmtMonthLabel(month) {
+      if (!month) return 'Статистика за текущий месяц';
+      const [y, m] = month.split('-');
+      const names = ['','январь','февраль','март','апрель','май','июнь','июль','август','сентябрь','октябрь','ноябрь','декабрь'];
+      const idx = parseInt(m, 10);
+      return 'Статистика за ' + (names[idx] || month) + ' ' + y;
+    }
+
+    function limitPercent(used, limit) {
+      if (!limit) return 0;
+      return Math.min(100, Math.round((used / limit) * 100));
+    }
+
     async function refresh() {
       clearError();
       try {
@@ -212,8 +241,9 @@
         ]);
         document.getElementById('endpoint').textContent = server.endpoint;
         document.getElementById('online-count').textContent = stats.online_peers + ' / ' + stats.tracked_peers;
-        document.getElementById('total-rx').textContent = fmtBytes(stats.total_rx_bytes);
-        document.getElementById('total-tx').textContent = fmtBytes(stats.total_tx_bytes);
+        document.getElementById('total-download').textContent = fmtBytes(stats.month_download_bytes);
+        document.getElementById('total-upload').textContent = fmtBytes(stats.month_upload_bytes);
+        document.getElementById('month-label').textContent = fmtMonthLabel(stats.month);
         renderPeers(peers);
       } catch (e) {
         showError(e.message);
@@ -225,19 +255,46 @@
       body.innerHTML = '';
       for (const p of peers) {
         const tr = document.createElement('tr');
-        const hs = p.last_handshake ? new Date(p.last_handshake).toLocaleString() : '—';
+        const hs = p.last_activity ? new Date(p.last_activity).toLocaleString() : '—';
+        const limitPct = limitPercent(p.month_total_bytes || 0, p.monthly_limit_bytes || 0);
+        const limitText = p.monthly_limit_bytes
+          ? fmtBytes(p.month_total_bytes || 0) + ' / ' + fmtBytes(p.monthly_limit_bytes)
+          : '—';
+        const limitBar = p.monthly_limit_bytes
+          ? `<div class="limit-bar"><span class="${p.limit_exceeded ? 'over' : ''}" style="width:${limitPct}%"></span></div>`
+          : '';
+        const limitBadge = p.limit_exceeded ? `<span class="badge warn">лимит</span><br>` : '';
         tr.innerHTML = `
           <td><strong>${p.name}</strong><br><small style="color:var(--muted)">${p.created_by || ''}</small></td>
           <td>${p.ipv4}<br><small style="color:var(--muted)">${p.ipv6}</small></td>
           <td><span class="badge ${p.online ? 'online' : 'offline'}">${p.online ? 'online' : 'offline'}</span></td>
-          <td>${fmtBytes(p.rx_bytes)} / ${fmtBytes(p.tx_bytes)}</td>
+          <td>↓ ${fmtBytes(p.month_download_bytes)}<br>↑ ${fmtBytes(p.month_upload_bytes)}</td>
+          <td>${limitBadge}${limitText}${limitBar}</td>
           <td>${hs}</td>
           <td class="actions">
+            <button class="secondary" onclick="setLimit('${p.name}', ${p.monthly_limit_bytes || 0})">Лимит</button>
             <button class="secondary" onclick="showConfig('${p.name}')">Конфиг</button>
             <button class="secondary" onclick="openQR('${p.name}')">QR</button>
             <button class="danger" onclick="revokePeer('${p.name}')">Удалить</button>
           </td>`;
         body.appendChild(tr);
+      }
+    }
+
+    async function setLimit(name, currentLimitBytes) {
+      const currentGB = currentLimitBytes ? (currentLimitBytes / (1024 ** 3)).toFixed(1) : '';
+      const input = prompt('Месячный лимит трафика в GB (0 = без лимита)', currentGB);
+      if (input === null) return;
+      const limitGB = parseFloat(input.replace(',', '.'));
+      if (Number.isNaN(limitGB) || limitGB < 0) return showError('Введите число >= 0');
+      try {
+        await api('/peers/' + encodeURIComponent(name) + '/limit', {
+          method: 'PATCH',
+          body: JSON.stringify({ limit_gb: limitGB }),
+        });
+        await refresh();
+      } catch (e) {
+        showError(e.message);
       }
     }
 

@@ -12,6 +12,7 @@ import (
 	"github.com/user/wg-conf/internal/config"
 	"github.com/user/wg-conf/internal/keys"
 	"github.com/user/wg-conf/internal/store"
+	"github.com/user/wg-conf/internal/traffic"
 	"github.com/user/wg-conf/internal/wgconf"
 	"github.com/user/wg-conf/internal/wireguard"
 )
@@ -44,17 +45,20 @@ type CreateResult struct {
 }
 
 type PeerView struct {
-	Name          string    `json:"name"`
-	PublicKey     string    `json:"public_key"`
-	IPv4          string    `json:"ipv4"`
-	IPv6          string    `json:"ipv6"`
-	Online        bool      `json:"online"`
-	RxBytes       int64     `json:"rx_bytes"`
-	TxBytes       int64     `json:"tx_bytes"`
-	LastHandshake time.Time `json:"last_handshake,omitempty"`
-	Endpoint      string    `json:"endpoint,omitempty"`
-	CreatedAt     time.Time `json:"created_at,omitempty"`
-	CreatedBy     string    `json:"created_by,omitempty"`
+	Name               string    `json:"name"`
+	PublicKey          string    `json:"public_key"`
+	IPv4               string    `json:"ipv4"`
+	IPv6               string    `json:"ipv6"`
+	Online             bool      `json:"online"`
+	LastActivity       time.Time `json:"last_activity,omitempty"`
+	MonthUploadBytes   int64     `json:"month_upload_bytes"`
+	MonthDownloadBytes int64     `json:"month_download_bytes"`
+	MonthTotalBytes    int64     `json:"month_total_bytes"`
+	MonthlyLimitBytes  int64     `json:"monthly_limit_bytes"`
+	LimitExceeded      bool      `json:"limit_exceeded"`
+	MonthLabel         string    `json:"month_label"`
+	CreatedAt          time.Time `json:"created_at,omitempty"`
+	CreatedBy          string    `json:"created_by,omitempty"`
 }
 
 func NewService(params *config.ServerParams, wgDir string, clientsDirs []string, st *store.Store, wg *wireguard.Client) *Service {
@@ -115,26 +119,63 @@ func (s *Service) List(ctx context.Context) ([]PeerView, error) {
 		return nil, err
 	}
 
+	month := traffic.MonthKey(time.Now())
+	monthly, err := s.store.MonthlyTrafficByPeer(ctx, month)
+	if err != nil {
+		return nil, err
+	}
+
 	views := make([]PeerView, 0, len(dbPeers))
 	for _, p := range dbPeers {
 		v := PeerView{
-			Name:      p.Name,
-			PublicKey: p.PublicKey,
-			IPv4:      p.IPv4,
-			IPv6:      p.IPv6,
-			CreatedAt: p.CreatedAt,
-			CreatedBy: p.CreatedBy,
+			Name:              p.Name,
+			PublicKey:         p.PublicKey,
+			IPv4:              p.IPv4,
+			IPv6:              p.IPv6,
+			CreatedAt:         p.CreatedAt,
+			CreatedBy:         p.CreatedBy,
+			MonthlyLimitBytes: p.MonthlyLimitBytes,
+			MonthLabel:        month,
 		}
 		if u, ok := usage[p.Name]; ok {
 			v.Online = u.Online
-			v.RxBytes = u.RxBytes
-			v.TxBytes = u.TxBytes
-			v.LastHandshake = u.LastHandshake
-			v.Endpoint = u.Endpoint
+			v.LastActivity = u.LastHandshake
+		}
+		if m, ok := monthly[p.Name]; ok {
+			v.MonthUploadBytes = m.UploadBytes
+			v.MonthDownloadBytes = m.DownloadBytes
+			v.MonthTotalBytes = m.TotalBytes
+			v.LimitExceeded = m.LimitExceeded
+		}
+		if v.MonthlyLimitBytes > 0 && v.MonthTotalBytes >= v.MonthlyLimitBytes {
+			v.LimitExceeded = true
 		}
 		views = append(views, v)
 	}
 	return views, nil
+}
+
+func (s *Service) SetLimit(ctx context.Context, name string, limitGB float64, actor string) error {
+	rec, err := s.store.GetPeer(ctx, name)
+	if err != nil {
+		return err
+	}
+	if rec == nil {
+		return ErrPeerNotFound
+	}
+
+	var limitBytes int64
+	if limitGB > 0 {
+		limitBytes = int64(limitGB * 1024 * 1024 * 1024)
+	}
+	if err := s.store.SetPeerLimit(ctx, name, limitBytes); err != nil {
+		return err
+	}
+	details := "unlimited"
+	if limitBytes > 0 {
+		details = fmt.Sprintf("%.2f GB", limitGB)
+	}
+	return s.store.AddAudit(ctx, actor, "set_limit", name, details)
 }
 
 func (s *Service) Create(ctx context.Context, name, actor string) (*CreateResult, error) {

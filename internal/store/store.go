@@ -15,14 +15,25 @@ type Store struct {
 }
 
 type PeerRecord struct {
-	Name         string
-	PublicKey    string
-	IPv4         string
-	IPv6         string
-	Enabled      bool
-	CreatedAt    time.Time
-	CreatedBy    string
-	ClientConfig string
+	Name              string
+	PublicKey         string
+	IPv4              string
+	IPv6              string
+	Enabled           bool
+	CreatedAt         time.Time
+	CreatedBy         string
+	ClientConfig      string
+	MonthlyLimitBytes int64
+}
+
+type MonthlyTraffic struct {
+	PeerName       string
+	YearMonth      string
+	UploadBytes    int64
+	DownloadBytes  int64
+	TotalBytes     int64
+	LimitBytes     int64
+	LimitExceeded  bool
 }
 
 type UsageSnapshot struct {
@@ -99,23 +110,48 @@ CREATE TABLE IF NOT EXISTS audit_log (
     details TEXT,
     created_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS monthly_traffic (
+    peer_name TEXT NOT NULL,
+    year_month TEXT NOT NULL,
+    upload_bytes INTEGER NOT NULL DEFAULT 0,
+    download_bytes INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (peer_name, year_month)
+);
 `
 	_, err := s.db.Exec(schema)
-	return err
+	if err != nil {
+		return err
+	}
+	_, _ = s.db.Exec(`ALTER TABLE peers ADD COLUMN monthly_limit_bytes INTEGER NOT NULL DEFAULT 0`)
+	return nil
 }
 
 func (s *Store) UpsertPeer(ctx context.Context, p PeerRecord) error {
 	_, err := s.db.ExecContext(ctx, `
-INSERT INTO peers (name, public_key, ipv4, ipv6, enabled, created_at, created_by, client_config)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO peers (name, public_key, ipv4, ipv6, enabled, created_at, created_by, client_config, monthly_limit_bytes)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(name) DO UPDATE SET
     public_key=excluded.public_key,
     ipv4=excluded.ipv4,
     ipv6=excluded.ipv6,
     enabled=excluded.enabled,
-    client_config=CASE WHEN excluded.client_config != '' THEN excluded.client_config ELSE peers.client_config END
-`, p.Name, p.PublicKey, p.IPv4, p.IPv6, boolToInt(p.Enabled), p.CreatedAt.UTC().Format(time.RFC3339), p.CreatedBy, p.ClientConfig)
+    client_config=CASE WHEN excluded.client_config != '' THEN excluded.client_config ELSE peers.client_config END,
+    monthly_limit_bytes=CASE WHEN excluded.monthly_limit_bytes > 0 THEN excluded.monthly_limit_bytes ELSE peers.monthly_limit_bytes END
+`, p.Name, p.PublicKey, p.IPv4, p.IPv6, boolToInt(p.Enabled), p.CreatedAt.UTC().Format(time.RFC3339), p.CreatedBy, p.ClientConfig, p.MonthlyLimitBytes)
 	return err
+}
+
+func (s *Store) SetPeerLimit(ctx context.Context, name string, limitBytes int64) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE peers SET monthly_limit_bytes = ? WHERE name = ?`, limitBytes, name)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
 }
 
 func (s *Store) DeletePeer(ctx context.Context, name string) error {
@@ -125,7 +161,7 @@ func (s *Store) DeletePeer(ctx context.Context, name string) error {
 
 func (s *Store) ListPeers(ctx context.Context) ([]PeerRecord, error) {
 	rows, err := s.db.QueryContext(ctx, `
-SELECT name, public_key, ipv4, ipv6, enabled, created_at, created_by, client_config FROM peers ORDER BY name
+SELECT name, public_key, ipv4, ipv6, enabled, created_at, created_by, client_config, monthly_limit_bytes FROM peers ORDER BY name
 `)
 	if err != nil {
 		return nil, err
@@ -137,7 +173,7 @@ SELECT name, public_key, ipv4, ipv6, enabled, created_at, created_by, client_con
 		var p PeerRecord
 		var enabled int
 		var createdAt string
-		if err := rows.Scan(&p.Name, &p.PublicKey, &p.IPv4, &p.IPv6, &enabled, &createdAt, &p.CreatedBy, &p.ClientConfig); err != nil {
+		if err := rows.Scan(&p.Name, &p.PublicKey, &p.IPv4, &p.IPv6, &enabled, &createdAt, &p.CreatedBy, &p.ClientConfig, &p.MonthlyLimitBytes); err != nil {
 			return nil, err
 		}
 		p.Enabled = enabled == 1
@@ -152,8 +188,8 @@ func (s *Store) GetPeer(ctx context.Context, name string) (*PeerRecord, error) {
 	var enabled int
 	var createdAt string
 	err := s.db.QueryRowContext(ctx, `
-SELECT name, public_key, ipv4, ipv6, enabled, created_at, created_by, client_config FROM peers WHERE name = ?
-`, name).Scan(&p.Name, &p.PublicKey, &p.IPv4, &p.IPv6, &enabled, &createdAt, &p.CreatedBy, &p.ClientConfig)
+SELECT name, public_key, ipv4, ipv6, enabled, created_at, created_by, client_config, monthly_limit_bytes FROM peers WHERE name = ?
+`, name).Scan(&p.Name, &p.PublicKey, &p.IPv4, &p.IPv6, &enabled, &createdAt, &p.CreatedBy, &p.ClientConfig, &p.MonthlyLimitBytes)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -205,6 +241,55 @@ WHERE id IN (SELECT MAX(id) FROM usage_snapshots GROUP BY peer_name)
 		result[snap.PeerName] = snap
 	}
 	return result, rows.Err()
+}
+
+func (s *Store) AddMonthlyTraffic(ctx context.Context, peerName, yearMonth string, uploadDelta, downloadDelta int64) error {
+	if uploadDelta <= 0 && downloadDelta <= 0 {
+		return nil
+	}
+	_, err := s.db.ExecContext(ctx, `
+INSERT INTO monthly_traffic (peer_name, year_month, upload_bytes, download_bytes)
+VALUES (?, ?, ?, ?)
+ON CONFLICT(peer_name, year_month) DO UPDATE SET
+    upload_bytes = upload_bytes + excluded.upload_bytes,
+    download_bytes = download_bytes + excluded.download_bytes
+`, peerName, yearMonth, uploadDelta, downloadDelta)
+	return err
+}
+
+func (s *Store) MonthlyTrafficByPeer(ctx context.Context, yearMonth string) (map[string]MonthlyTraffic, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT m.peer_name, m.year_month, m.upload_bytes, m.download_bytes, COALESCE(p.monthly_limit_bytes, 0)
+FROM monthly_traffic m
+LEFT JOIN peers p ON p.name = m.peer_name
+WHERE m.year_month = ?
+`, yearMonth)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	result := make(map[string]MonthlyTraffic)
+	for rows.Next() {
+		var m MonthlyTraffic
+		if err := rows.Scan(&m.PeerName, &m.YearMonth, &m.UploadBytes, &m.DownloadBytes, &m.LimitBytes); err != nil {
+			return nil, err
+		}
+		m.TotalBytes = m.UploadBytes + m.DownloadBytes
+		if m.LimitBytes > 0 && m.TotalBytes >= m.LimitBytes {
+			m.LimitExceeded = true
+		}
+		result[m.PeerName] = m
+	}
+	return result, rows.Err()
+}
+
+func (s *Store) MonthlyTrafficTotals(ctx context.Context, yearMonth string) (upload, download int64, err error) {
+	err = s.db.QueryRowContext(ctx, `
+SELECT COALESCE(SUM(upload_bytes), 0), COALESCE(SUM(download_bytes), 0)
+FROM monthly_traffic WHERE year_month = ?
+`, yearMonth).Scan(&upload, &download)
+	return upload, download, err
 }
 
 func (s *Store) AddAudit(ctx context.Context, actor, action, peerName, details string) error {

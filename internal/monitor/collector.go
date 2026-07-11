@@ -7,6 +7,7 @@ import (
 
 	"github.com/user/wg-conf/internal/config"
 	"github.com/user/wg-conf/internal/store"
+	"github.com/user/wg-conf/internal/traffic"
 	"github.com/user/wg-conf/internal/wgconf"
 	"github.com/user/wg-conf/internal/wireguard"
 )
@@ -67,6 +68,13 @@ func (c *Collector) collect(ctx context.Context) {
 	}
 
 	now := time.Now().UTC()
+	month := traffic.MonthKey(now)
+	prev, err := c.store.LatestUsageByPeer(ctx)
+	if err != nil {
+		slog.Error("load previous usage", "error", err)
+		prev = map[string]store.UsageSnapshot{}
+	}
+
 	for _, p := range peers {
 		s, ok := byKey[p.PublicKey]
 		if !ok {
@@ -84,6 +92,15 @@ func (c *Collector) collect(ctx context.Context) {
 		}
 		if err := c.store.SaveUsageSnapshot(ctx, snap); err != nil {
 			slog.Error("save usage snapshot", "peer", p.Name, "error", err)
+			continue
+		}
+
+		if last, ok := prev[p.Name]; ok {
+			upload := traffic.ClientUploadDelta(last.RxBytes, s.ReceiveBytes)
+			download := traffic.ClientDownloadDelta(last.TxBytes, s.TransmitBytes)
+			if err := c.store.AddMonthlyTraffic(ctx, p.Name, month, upload, download); err != nil {
+				slog.Error("add monthly traffic", "peer", p.Name, "error", err)
+			}
 		}
 	}
 }
