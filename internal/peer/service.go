@@ -75,6 +75,7 @@ func (s *Service) SyncFromConfig(ctx context.Context) error {
 	}
 
 	records := make([]store.PeerRecord, len(peers))
+	names := make([]string, len(peers))
 	for i, p := range peers {
 		cfg, _ := clientfile.Load(s.clientsDirs, s.params.ServerWGNIC, p.Name)
 		if cfg != "" {
@@ -82,6 +83,7 @@ func (s *Service) SyncFromConfig(ctx context.Context) error {
 				cfg = updated
 			}
 		}
+		names[i] = p.Name
 		records[i] = store.PeerRecord{
 			Name:         p.Name,
 			PublicKey:    p.PublicKey,
@@ -92,7 +94,10 @@ func (s *Service) SyncFromConfig(ctx context.Context) error {
 			ClientConfig: cfg,
 		}
 	}
-	return s.store.SyncPeersFromConfig(ctx, records)
+	if err := s.store.SyncPeersFromConfig(ctx, records); err != nil {
+		return err
+	}
+	return s.store.PrunePeersExcept(ctx, names)
 }
 
 func (s *Service) List(ctx context.Context) ([]PeerView, error) {
@@ -302,30 +307,43 @@ func (s *Service) GetConfig(ctx context.Context, name string) (string, error) {
 
 func (s *Service) Revoke(ctx context.Context, name, actor string) error {
 	confPath := s.params.WGConfPath(s.wgDir)
-	peers, err := wgconf.Parse(confPath)
+	confPeers, err := wgconf.Parse(confPath)
 	if err != nil {
 		return err
 	}
 
-	found := false
 	var publicKey string
-	for _, p := range peers {
+	inConf := false
+	for _, p := range confPeers {
 		if p.Name == name {
-			found = true
+			inConf = true
 			publicKey = p.PublicKey
 			break
 		}
 	}
-	if !found {
+
+	rec, err := s.store.GetPeer(ctx, name)
+	if err != nil {
+		return err
+	}
+	if !inConf && rec == nil {
 		return ErrPeerNotFound
 	}
+	if publicKey == "" && rec != nil {
+		publicKey = rec.PublicKey
+	}
 
-	if err := wgconf.RemovePeer(confPath, name); err != nil {
-		return err
+	if inConf {
+		if err := wgconf.RemovePeer(confPath, name); err != nil {
+			return err
+		}
 	}
-	if err := s.wg.RemovePeer(s.params.ServerWGNIC, publicKey); err != nil {
-		return err
+	if publicKey != "" {
+		if err := s.wg.RemovePeer(s.params.ServerWGNIC, publicKey); err != nil {
+			return err
+		}
 	}
+
 	if err := s.store.DeletePeer(ctx, name); err != nil {
 		return err
 	}

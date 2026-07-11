@@ -78,19 +78,29 @@ func (c *Client) AddPeer(iface, publicKey, presharedKey, allowedIPs string) erro
 	return nil
 }
 
-// RemovePeer removes a peer from the live interface.
+// RemovePeer removes a peer from the live interface. Ignores already removed peers.
 func (c *Client) RemovePeer(iface, publicKey string) error {
 	pub, err := wgtypes.ParseKey(publicKey)
 	if err != nil {
 		return fmt.Errorf("parse public key: %w", err)
 	}
-	if err := c.ctrl.ConfigureDevice(iface, wgtypes.Config{
-		Peers: []wgtypes.PeerConfig{{
-			PublicKey: pub,
-			Remove:    true,
-		}},
-	}); err != nil {
-		return fmt.Errorf("configure device remove peer: %w", err)
+
+	dev, err := c.ctrl.Device(iface)
+	if err != nil {
+		return fmt.Errorf("get device %s: %w", iface, err)
+	}
+	for _, p := range dev.Peers {
+		if p.PublicKey == pub {
+			if err := c.ctrl.ConfigureDevice(iface, wgtypes.Config{
+				Peers: []wgtypes.PeerConfig{{
+					PublicKey: pub,
+					Remove:    true,
+				}},
+			}); err != nil {
+				return fmt.Errorf("configure device remove peer: %w", err)
+			}
+			return nil
+		}
 	}
 	return nil
 }

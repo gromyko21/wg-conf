@@ -9,7 +9,7 @@ import (
 	"strings"
 )
 
-var clientNameRe = regexp.MustCompile(`^### Client ([a-zA-Z0-9_-]+)$`)
+var clientNameRe = regexp.MustCompile(`^###\s*Client\s+([a-zA-Z0-9_-]+)\s*$`)
 
 // Peer represents a client peer block in the server config.
 type Peer struct {
@@ -129,14 +129,14 @@ func RemovePeer(path, name string) error {
 		return fmt.Errorf("read config: %w", err)
 	}
 
-	marker := "### Client " + name
+	marker := regexp.MustCompile(`^###\s*Client\s+` + regexp.QuoteMeta(name) + `\s*$`)
 	lines := strings.Split(string(data), "\n")
 	var out []string
 	skip := false
 
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
-		if trimmed == marker {
+		if marker.MatchString(trimmed) {
 			skip = true
 			continue
 		}

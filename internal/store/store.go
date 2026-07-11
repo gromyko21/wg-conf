@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -268,6 +269,23 @@ ON CONFLICT(name) DO UPDATE SET
 	}
 
 	return tx.Commit()
+}
+
+func (s *Store) PrunePeersExcept(ctx context.Context, keep []string) error {
+	if len(keep) == 0 {
+		_, err := s.db.ExecContext(ctx, `DELETE FROM peers`)
+		return err
+	}
+
+	placeholders := make([]string, len(keep))
+	args := make([]any, len(keep))
+	for i, name := range keep {
+		placeholders[i] = "?"
+		args[i] = name
+	}
+	query := fmt.Sprintf(`DELETE FROM peers WHERE name NOT IN (%s)`, strings.Join(placeholders, ","))
+	_, err := s.db.ExecContext(ctx, query, args...)
+	return err
 }
 
 func boolToInt(b bool) int {
