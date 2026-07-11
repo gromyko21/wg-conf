@@ -23,7 +23,7 @@
       color: var(--text);
       line-height: 1.5;
     }
-    .wrap { max-width: 1100px; margin: 0 auto; padding: 24px; }
+    .wrap { max-width: 1400px; margin: 0 auto; padding: 24px; }
     h1 { margin: 0 0 8px; font-size: 1.75rem; }
     .sub { color: var(--muted); margin-bottom: 24px; }
     .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 24px; }
@@ -53,12 +53,19 @@
     button.secondary { background: transparent; }
     button.danger { background: var(--red); border-color: var(--red); }
     button.warn { background: #f59e0b; border-color: #f59e0b; color: #111; }
-    table { width: 100%; border-collapse: collapse; }
+    table { width: 100%; border-collapse: collapse; table-layout: auto; }
+    .table-wrap { overflow-x: auto; margin: 0 -4px; padding: 0 4px; }
     th, td {
       text-align: left;
       padding: 12px;
       border-bottom: 1px solid var(--border);
       font-size: 0.9rem;
+      vertical-align: middle;
+    }
+    th:last-child,
+    td.actions {
+      width: 1%;
+      white-space: nowrap;
     }
     th { color: var(--muted); font-weight: 500; }
     .badge {
@@ -84,8 +91,18 @@
       background: var(--accent);
     }
     .limit-bar > span.over { background: var(--red); }
-    .actions { display: flex; gap: 6px; flex-wrap: wrap; }
-    .actions button { padding: 6px 10px; font-size: 0.8rem; }
+    .actions {
+      display: flex;
+      gap: 4px;
+      flex-wrap: nowrap;
+      align-items: center;
+    }
+    .actions button {
+      padding: 5px 8px;
+      font-size: 0.75rem;
+      flex-shrink: 0;
+      white-space: nowrap;
+    }
     #modal {
       display: none;
       position: fixed;
@@ -145,6 +162,7 @@
         <button class="secondary" onclick="refresh()">Обновить</button>
       </div>
       <div id="error" class="error hidden"></div>
+      <div class="table-wrap">
       <table>
         <thead>
           <tr>
@@ -159,6 +177,7 @@
         </thead>
         <tbody id="peers-body"></tbody>
       </table>
+      </div>
     </div>
   </div>
 
@@ -269,8 +288,8 @@
           ? '<span class="badge warn">остановлен</span>'
           : `<span class="badge ${p.online ? 'online' : 'offline'}">${p.online ? 'online' : 'offline'}</span>`;
         const stopStartBtn = p.enabled
-          ? `<button class="warn" onclick="stopPeer('${p.name}')">Остановить</button>`
-          : `<button onclick="startPeer('${p.name}')">Запустить</button>`;
+          ? `<button class="warn" onclick="stopPeer('${p.name}')" title="Остановить peer">Стоп</button>`
+          : `<button onclick="startPeer('${p.name}')" title="Запустить peer">Старт</button>`;
         tr.innerHTML = `
           <td><strong>${p.name}</strong><br><small style="color:var(--muted)">${p.created_by || ''}</small></td>
           <td>${p.ipv4}<br><small style="color:var(--muted)">${p.ipv6}</small></td>
